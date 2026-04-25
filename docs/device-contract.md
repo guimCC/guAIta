@@ -160,7 +160,6 @@ If `eventId` or `observedAt` are missing, the server may generate them.
   "confidence": 0.91,
   "count": 1,
   "direction": "towards_city",
-  "imageUrl": null,
   "temperatureC": 17.4,
   "humidityPct": 68,
   "lightLux": 310,
@@ -169,6 +168,11 @@ If `eventId` or `observedAt` are missing, the server may generate them.
     "name": "wild-boar-detector",
     "version": "demo-v1",
     "latencyMs": 143
+  },
+  "snapshot": {
+    "contentType": "image/png",
+    "encoding": "base64",
+    "data": "iVBORw0KGgoAAAANSUhEUg..."
   }
 }
 ```
@@ -183,7 +187,8 @@ If `eventId` or `observedAt` are missing, the server may generate them.
 - `confidence`: value from `0` to `1`.
 - `count`: optional positive integer. Defaults to `1`.
 - `direction`: optional movement estimate such as `towards_city`, `towards_forest`, `left_to_right`, or `unknown`.
-- `imageUrl`: optional future snapshot URL. The MVP should not depend on image upload.
+- `snapshot`: optional JPEG or PNG snapshot encoded as base64 in the same JSON request. See [Device Image Snapshot Contract](device-image-snapshot-contract.md).
+- `imageUrl`: server-generated URL returned when a snapshot is accepted. The device should not send this field.
 - `temperatureC`: optional temperature reading.
 - `humidityPct`: optional humidity reading from `0` to `100`.
 - `lightLux`: optional non-negative light reading.
@@ -248,7 +253,8 @@ curl -X POST https://uncordial-mathias-infirmly.ngrok-free.dev/api/device/events
     "species": "wild_boar",
     "confidence": 0.91,
     "count": 1,
-    "direction": "towards_city"
+    "direction": "towards_city",
+    "imageUrl": "https://uncordial-mathias-infirmly.ngrok-free.dev/api/events/evt_live_device_001/snapshot"
   }
 }
 ```
@@ -299,9 +305,9 @@ camera frame
 -> POST to server
 ```
 
-Do not stream all video to the server for the MVP. Send compact metadata only.
+Do not stream all video to the server for the MVP. Send compact metadata and, when useful, one small still image snapshot.
 
-For planned optional snapshot upload after a detection, see [Device Image Snapshot Contract](device-image-snapshot-contract.md).
+For optional inline snapshot details, see [Device Image Snapshot Contract](device-image-snapshot-contract.md).
 
 ## Python Sender Example
 
@@ -367,7 +373,7 @@ def send_telemetry(temperature_c: float, humidity_pct: float):
 - Send HTTP JSON to `/api/device/events`.
 - Send periodic sensor JSON to `/api/device/telemetry` when readings are available.
 - Use `source: "device"`.
-- Send only metadata, not video.
+- Send only metadata plus an optional small JPEG or PNG snapshot, not video.
 - Keep `confidence` between `0` and `1`.
 - Include telemetry if available, but do not block on it.
 - Retry later if the network call fails; do not block local detection.

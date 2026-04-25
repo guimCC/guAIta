@@ -1,29 +1,29 @@
 # Device Image Snapshot Contract
 
-Status: planned v2, not required for the current MVP.
+Status: implemented for the demo path.
 
 ## Goal
 
-After a station detects a wild boar, it may upload one still image snapshot linked to the detection event. The dashboard can then show the snapshot in the event or alert panel.
+After a station detects a wild boar, the Arduino/UNO Q sender may include one still JPEG or PNG snapshot in the same detection JSON request. The dashboard then shows a camera icon on that detection; opening the icon loads the stored image in a new browser page.
 
-Image upload must remain optional. A detection event is valid and useful even when no image is uploaded.
+Image data is optional. A detection event remains valid when no snapshot is available.
 
 ## Design Principle
 
-Send metadata first, image second.
+Use one outbound request from the device.
 
 ```text
 1. Device detects boar locally.
-2. Device sends JSON detection event.
-3. Server returns `eventId`.
-4. Device optionally uploads one JPEG snapshot for that `eventId`.
-5. Server stores the image and updates the event with `imageUrl`.
-6. Dashboard receives an update and renders the snapshot.
+2. Device builds the normal detection JSON.
+3. Device optionally adds `snapshot` with base64 image bytes.
+4. Device POSTs the JSON to `/api/device/events`.
+5. Server generates `eventId`, stores metadata, stores the image, and sets `imageUrl`.
+6. Dashboard receives `detection.created` with `imageUrl` already present.
 ```
 
-Do not send base64 images inside the detection JSON. Do not stream video for the MVP/v2 snapshot path.
+The device does not need to generate an event ID, listen for server events, or make a second upload request.
 
-## Step 1: Detection Event
+## Endpoint
 
 ```text
 POST {SERVER_URL}/api/device/events
@@ -31,7 +31,7 @@ Authorization: Bearer {DEVICE_TOKEN}
 Content-Type: application/json
 ```
 
-Example:
+Minimum event with snapshot:
 
 ```json
 {
@@ -39,11 +39,33 @@ Example:
   "source": "device",
   "species": "wild_boar",
   "confidence": 0.91,
-  "direction": "towards_city"
+  "observedAt": "2026-04-25T10:42:12.000Z",
+  "snapshot": {
+    "contentType": "image/png",
+    "encoding": "base64",
+    "data": "iVBORw0KGgoAAAANSUhEUg..."
+  }
 }
 ```
 
-Response:
+If no photo is available, omit `snapshot` or send it as `null`.
+
+## Snapshot Rules
+
+```text
+format: JPEG or PNG
+encoding: base64
+max decoded image size: 1 MB
+recommended width: 320-640px for demo reliability
+field: snapshot.data contains raw base64, not a filename
+```
+
+The server accepts `data:image/jpeg;base64,...` and `data:image/png;base64,...` prefixes, but the preferred device payload is only the base64 bytes.
+The backend detects the real image format from the decoded bytes, so PNG bytes can still be accepted even if a device mistakenly sends `contentType: "image/jpeg"`.
+
+## Expected Response
+
+When the snapshot is valid:
 
 ```json
 {
@@ -58,41 +80,14 @@ Response:
     "species": "wild_boar",
     "confidence": 0.91,
     "count": 1,
-    "direction": "towards_city"
+    "imageUrl": "https://your-demo-domain/api/events/evt_device_m3abc123_d4e5f6a7/snapshot"
   }
 }
 ```
 
-## Step 2: Snapshot Upload
+The raw `snapshot.data` is never stored inside the event JSON response.
 
-```text
-POST {SERVER_URL}/api/device/events/{eventId}/snapshot
-Authorization: Bearer {DEVICE_TOKEN}
-Content-Type: image/jpeg
-```
-
-Body: raw JPEG bytes.
-
-Example:
-
-```bash
-curl -X POST https://uncordial-mathias-infirmly.ngrok-free.dev/api/device/events/evt_device_m3abc123_d4e5f6a7/snapshot \
-  -H "Authorization: Bearer ${DEVICE_TOKEN}" \
-  -H "Content-Type: image/jpeg" \
-  --data-binary @snapshot.jpg
-```
-
-Expected response:
-
-```json
-{
-  "ok": true,
-  "eventId": "evt_device_m3abc123_d4e5f6a7",
-  "imageUrl": "/api/events/evt_device_m3abc123_d4e5f6a7/snapshot"
-}
-```
-
-## Step 3: Snapshot Read
+## Snapshot Read
 
 ```text
 GET {SERVER_URL}/api/events/{eventId}/snapshot
@@ -101,31 +96,33 @@ GET {SERVER_URL}/api/events/{eventId}/snapshot
 Response:
 
 ```text
-Content-Type: image/jpeg
+Content-Type: image/jpeg or image/png
 ```
 
-Body: raw JPEG bytes.
+Body: raw image bytes.
 
 ## Server Behavior
 
-The server should:
+The server:
 
-- require the same `DEVICE_TOKEN` bearer auth for upload as for detection events
-- reject unknown `eventId`
-- reject snapshots for events whose `source` is not `device`, unless explicitly allowed later
-- limit file size, initially around `1-2MB`
-- accept only `image/jpeg` for the first version
-- store images locally under `data/event-images/`
-- update the event `imageUrl`
-- broadcast a realtime update such as `detection.snapshot_attached`
+- validates the normal detection fields
+- generates `eventId` when the device omits it
+- decodes `snapshot.data` when present
+- rejects snapshots that are not JPEG or PNG
+- rejects snapshots larger than 1 MB decoded
+- stores images locally under `data/event-images/`
+- stores event JSON without raw image bytes
+- sets `event.imageUrl`
+- emits the normal `detection.created` event with `imageUrl`
 
 Suggested storage path:
 
 ```text
-data/event-images/{eventId}.jpg
+data/event-images/{encoded-event-id}.jpg
+data/event-images/{encoded-event-id}.png
 ```
 
-Suggested public URL:
+Public image URL:
 
 ```text
 /api/events/{eventId}/snapshot
@@ -133,48 +130,28 @@ Suggested public URL:
 
 ## Frontend Behavior
 
-The dashboard should:
+The dashboard:
 
-- keep rendering the detection immediately after metadata arrives
-- show a loading or empty snapshot state if no image exists yet
-- update the event panel when `imageUrl` becomes available
-- render a small thumbnail first
-- allow opening a larger preview later if useful
-
-The map should not depend on image upload.
-
-## Device Behavior
-
-The device sender should:
-
-- send metadata first
-- upload one snapshot only if the metadata request succeeds
-- use the `eventId` returned by the server
-- compress or resize the JPEG before upload
-- skip image upload if connectivity is poor
-- never block local detection on image upload
-
-Recommended image constraints:
-
-```text
-format: JPEG
-max size: 1-2MB
-suggested width: 640-1280px
-upload count: 1 snapshot per detection event
-```
+- keeps rendering detections without photos
+- shows a camera icon only when `event.imageUrl` exists
+- opens the snapshot in a new browser page when the operator presses the icon
 
 ## Python Example
 
 ```python
+import base64
 import json
 import requests
 
-SERVER_URL = "https://uncordial-mathias-infirmly.ngrok-free.dev"
+SERVER_URL = "https://your-demo-domain"
 DEVICE_TOKEN = "demo-device-token"
 STATION_ID = "collserola-control-02"
 
 def send_detection_with_snapshot(confidence: float, snapshot_path: str):
-    event_response = requests.post(
+    with open(snapshot_path, "rb") as snapshot_file:
+        snapshot_base64 = base64.b64encode(snapshot_file.read()).decode("utf-8")
+
+    response = requests.post(
         f"{SERVER_URL}/api/device/events",
         headers={
             "Authorization": f"Bearer {DEVICE_TOKEN}",
@@ -184,48 +161,19 @@ def send_detection_with_snapshot(confidence: float, snapshot_path: str):
             "stationId": STATION_ID,
             "source": "device",
             "species": "wild_boar",
-            "confidence": confidence
+            "confidence": confidence,
+            "snapshot": {
+                "contentType": "image/png",
+                "encoding": "base64",
+                "data": snapshot_base64
+            }
         }),
-        timeout=5
+        timeout=10
     )
-    event_response.raise_for_status()
-    event = event_response.json()
-    event_id = event["eventId"]
-
-    with open(snapshot_path, "rb") as snapshot_file:
-        snapshot_response = requests.post(
-            f"{SERVER_URL}/api/device/events/{event_id}/snapshot",
-            headers={
-                "Authorization": f"Bearer {DEVICE_TOKEN}",
-                "Content-Type": "image/jpeg"
-            },
-            data=snapshot_file,
-            timeout=10
-        )
-    snapshot_response.raise_for_status()
-    return {
-        "event": event,
-        "snapshot": snapshot_response.json()
-    }
+    response.raise_for_status()
+    return response.json()
 ```
 
-## Rejected Alternatives
+## Tradeoff
 
-Base64 in detection JSON:
-
-- easier to prototype
-- bloats JSON payloads
-- makes validation and logging noisy
-- increases chance of failed detection ingestion
-
-Multipart event plus image:
-
-- reasonable later
-- more complex than the two-step flow
-- makes the detection event depend on image upload success
-
-Video streaming:
-
-- out of scope
-- too bandwidth-heavy for the demo architecture
-- conflicts with the edge-first metadata approach
+Base64 inside JSON is less efficient than a binary upload, but it is the simplest demo contract because the device only needs one outbound HTTP JSON request.

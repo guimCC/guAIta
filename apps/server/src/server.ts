@@ -1,5 +1,7 @@
 import cors from "@fastify/cors";
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
+import { createReadStream, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { Server as SocketServer } from "socket.io";
 import {
   AcknowledgeCivilProtectionCallInputSchema,
@@ -12,6 +14,7 @@ import {
   type CivilProtectionCall,
   type DetectionEvent,
   type DetectionEventInput,
+  type DetectionSnapshotInput,
   type DetectionSource,
   type Station,
   type TelemetryReading,
@@ -31,8 +34,21 @@ function isDuplicateEventError(error: unknown): boolean {
   return error instanceof Error && error.message.includes("UNIQUE constraint failed");
 }
 
+const MAX_SNAPSHOT_BYTES = 1_000_000;
 const ACTIVE_ESCALATION_CALL_STATUSES = new Set<CallStatus>(["requested", "calling", "completed"]);
 const REUSABLE_CALL_STATUSES = new Set<CallStatus>(["requested", "calling", "completed", "acknowledged"]);
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+interface StoredSnapshot {
+  imageBuffer: Buffer;
+  extension: "jpg" | "png";
+  contentType: "image/jpeg" | "image/png";
+}
+
+interface StoredSnapshotFile {
+  path: string;
+  contentType: StoredSnapshot["contentType"];
+}
 
 interface DeviceListenerState {
   enabled: boolean;
@@ -41,9 +57,20 @@ interface DeviceListenerState {
   expiresAt?: string;
 }
 
+class SnapshotValidationError extends Error {
+  constructor(
+    readonly code: string,
+    readonly statusCode: number,
+    message: string
+  ) {
+    super(message);
+  }
+}
+
 export async function buildServer() {
   const db = new GuaitaDatabase(config.databasePath);
   const app = Fastify({
+    bodyLimit: 2_000_000,
     logger: {
       level: process.env.NODE_ENV === "test" ? "silent" : "info"
     }
@@ -153,6 +180,30 @@ export async function buildServer() {
     };
   });
 
+  app.get("/api/events/:eventId/snapshot", async (request: FastifyRequest<{ Params: { eventId: string } }>, reply) => {
+    const event = db.getEvent(request.params.eventId);
+
+    if (!event || !event.imageUrl) {
+      return reply.code(404).send({
+        ok: false,
+        error: "snapshot_not_found"
+      });
+    }
+
+    const storedSnapshot = findSnapshotFile(event.eventId);
+    if (!storedSnapshot) {
+      return reply.code(404).send({
+        ok: false,
+        error: "snapshot_not_found"
+      });
+    }
+
+    return reply
+      .header("Cache-Control", "no-store")
+      .type(storedSnapshot.contentType)
+      .send(createReadStream(storedSnapshot.path));
+  });
+
   app.get("/api/telemetry", async (request: FastifyRequest<{ Querystring: { limit?: string } }>) => {
     const limit = request.query.limit ? Number(request.query.limit) : 100;
     return {
@@ -200,6 +251,7 @@ export async function buildServer() {
 
   app.delete("/api/events", async () => {
     const deletedCount = db.clearEvents();
+    clearEventImageFiles();
     io.emit(SOCKET_EVENTS.eventsCleared, {
       deletedCount,
       clearedAt: new Date().toISOString()
@@ -656,6 +708,14 @@ async function createDetection(
       });
     }
 
+    if (error instanceof SnapshotValidationError) {
+      return reply.code(error.statusCode).send({
+        ok: false,
+        error: error.code,
+        message: error.message
+      });
+    }
+
     if (error instanceof Error && error.message.startsWith("unknown_station:")) {
       return reply.code(404).send({
         ok: false,
@@ -884,12 +944,20 @@ function extractPostCallData(webhookBody: Record<string, unknown> | undefined) {
 }
 
 function storeDetection(input: DetectionEventInput, db: GuaitaDatabase, io: SocketServer) {
-  const event = normalizeDetectionEvent(input);
-  const station = db.getStation(event.stationId);
+  const normalizedEvent = normalizeDetectionEvent(input);
+  const station = db.getStation(normalizedEvent.stationId);
 
   if (!station) {
-    throw new Error(`unknown_station:${event.stationId}`);
+    throw new Error(`unknown_station:${normalizedEvent.stationId}`);
   }
+
+  const storedSnapshot = storeEventSnapshot(input.snapshot, normalizedEvent.eventId);
+  const event: DetectionEvent = storedSnapshot
+    ? {
+        ...normalizedEvent,
+        imageUrl: storedSnapshot.imageUrl
+      }
+    : normalizedEvent;
 
   db.insertEvent(event);
   const severity = estimateSeverity(event, station);
@@ -904,6 +972,105 @@ function storeDetection(input: DetectionEventInput, db: GuaitaDatabase, io: Sock
   return {
     event,
     severity
+  };
+}
+
+function snapshotBaseNameForEvent(eventId: string): string {
+  return Buffer.from(eventId).toString("base64url");
+}
+
+function snapshotPathForEvent(eventId: string, extension: StoredSnapshot["extension"]): string {
+  return join(config.eventImagesPath, `${snapshotBaseNameForEvent(eventId)}.${extension}`);
+}
+
+function findSnapshotFile(eventId: string): StoredSnapshotFile | undefined {
+  const jpegPath = snapshotPathForEvent(eventId, "jpg");
+  if (existsSync(jpegPath)) {
+    return {
+      path: jpegPath,
+      contentType: "image/jpeg"
+    };
+  }
+
+  const pngPath = snapshotPathForEvent(eventId, "png");
+  if (existsSync(pngPath)) {
+    return {
+      path: pngPath,
+      contentType: "image/png"
+    };
+  }
+
+  return undefined;
+}
+
+function snapshotUrlForEvent(eventId: string): string {
+  const baseUrl = config.publicBaseUrl.endsWith("/") ? config.publicBaseUrl : `${config.publicBaseUrl}/`;
+  return new URL(`api/events/${encodeURIComponent(eventId)}/snapshot`, baseUrl).toString();
+}
+
+function clearEventImageFiles(): void {
+  rmSync(config.eventImagesPath, { recursive: true, force: true });
+  mkdirSync(config.eventImagesPath, { recursive: true });
+}
+
+function storeEventSnapshot(
+  snapshot: DetectionSnapshotInput | null | undefined,
+  eventId: string
+): { imageUrl: string } | undefined {
+  if (!snapshot) {
+    return undefined;
+  }
+
+  const storedSnapshot = decodeSnapshot(snapshot);
+  mkdirSync(config.eventImagesPath, { recursive: true });
+  writeFileSync(snapshotPathForEvent(eventId, storedSnapshot.extension), storedSnapshot.imageBuffer);
+
+  return {
+    imageUrl: snapshotUrlForEvent(eventId)
+  };
+}
+
+function decodeSnapshot(snapshot: DetectionSnapshotInput): StoredSnapshot {
+  const base64Data = snapshot.data
+    .trim()
+    .replace(/^data:image\/(?:jpeg|png);base64,/i, "")
+    .replace(/\s/g, "");
+
+  if (!base64Data || base64Data.length % 4 === 1 || !/^[A-Za-z0-9+/]*={0,2}$/.test(base64Data)) {
+    throw new SnapshotValidationError("invalid_snapshot", 400, "Snapshot data must be valid base64 image bytes.");
+  }
+
+  const paddedData = base64Data.padEnd(Math.ceil(base64Data.length / 4) * 4, "=");
+  const imageBuffer = Buffer.from(paddedData, "base64");
+
+  return snapshotFromImageBuffer(imageBuffer);
+}
+
+function snapshotFromImageBuffer(imageBuffer: Buffer): StoredSnapshot {
+  if (imageBuffer.length === 0) {
+    throw new SnapshotValidationError("invalid_snapshot", 400, "Snapshot data is empty.");
+  }
+
+  if (imageBuffer.length > MAX_SNAPSHOT_BYTES) {
+    throw new SnapshotValidationError("snapshot_too_large", 413, "Snapshot image must be 1 MB or smaller.");
+  }
+
+  if (imageBuffer[0] !== 0xff || imageBuffer[1] !== 0xd8) {
+    if (imageBuffer.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) {
+      return {
+        imageBuffer,
+        extension: "png",
+        contentType: "image/png"
+      };
+    }
+
+    throw new SnapshotValidationError("invalid_snapshot", 400, "Snapshot must be a JPEG or PNG image.");
+  }
+
+  return {
+    imageBuffer,
+    extension: "jpg",
+    contentType: "image/jpeg"
   };
 }
 

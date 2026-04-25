@@ -47,24 +47,22 @@ Deferred interactive map features:
 
 The MVP should use prebuilt stations and zones.
 
-## Media Uploads
+## Media
 
-Deferred event media features are documented in [Device Image Snapshot Contract](device-image-snapshot-contract.md).
+Inline device snapshots are documented in [Device Image Snapshot Contract](device-image-snapshot-contract.md).
 
-Planned approach:
+Current demo approach:
 
-- send metadata first
-- upload one optional JPEG snapshot after receiving `eventId`
+- send one optional base64 JPEG or PNG snapshot inside `/api/device/events`
 - store snapshots locally under `data/event-images/`
 - expose snapshots through `/api/events/{eventId}/snapshot`
+- show a camera icon on detections with `imageUrl`
 
 Additional future media features:
 
 - attach short video clip
 - blur people or private areas
-- show model bounding boxes on snapshots
-
-The MVP should send metadata only.
+- tune snapshot compression and resolution per hardware performance
 
 ## Deployment
 

@@ -135,6 +135,7 @@ export const config = {
   port: numberEnv("PORT", 3000),
   publicBaseUrl: cleanEnv("PUBLIC_TUNNEL_URL") ?? cleanEnv("PUBLIC_BASE_URL") ?? "http://localhost:3000",
   databasePath: resolveFromRepo(cleanEnv("DATABASE_PATH") ?? "./data/guaita.db"),
+  eventImagesPath: resolveFromRepo(cleanEnv("EVENT_IMAGES_PATH") ?? "./data/event-images"),
   deviceToken: cleanEnv("DEVICE_TOKEN") ?? "demo-device-token",
   demoResetOnStart: booleanEnv("DEMO_RESET_ON_START", nodeEnv() !== "production"),
   deviceEventsEnabledOnStart: booleanEnv("DEVICE_EVENTS_ENABLED_ON_START", false),

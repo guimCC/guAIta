@@ -1,7 +1,9 @@
 import {
   Activity,
+  ArrowLeft,
   Battery,
   BellRing,
+  Camera,
   ChevronDown,
   CheckCircle2,
   Clock3,
@@ -157,6 +159,30 @@ const scenarioSpeedOptions = [1, 120, 480, 1440] as const;
 
 function apiUrl(path: string): string {
   return `${apiBaseUrl.replace(/\/$/, "")}${path}`;
+}
+
+function eventPhotoUrl(event: DetectionEvent): string | undefined {
+  if (!event.imageUrl) {
+    return undefined;
+  }
+
+  return apiUrl(`/api/events/${encodeURIComponent(event.eventId)}/snapshot`);
+}
+
+function eventPhotoViewerUrl(event: DetectionEvent): string | undefined {
+  if (!event.imageUrl) {
+    return undefined;
+  }
+
+  if (typeof window === "undefined") {
+    return `/?snapshotEventId=${encodeURIComponent(event.eventId)}`;
+  }
+
+  const url = new URL(window.location.href);
+  url.search = "";
+  url.hash = "";
+  url.searchParams.set("snapshotEventId", event.eventId);
+  return url.toString();
 }
 
 async function fetchJson<T>(path: string): Promise<T> {
@@ -544,6 +570,15 @@ function shouldRenderPublicStatusPage(): boolean {
   }
 
   return ["guaita.biz", "www.guaita.biz"].includes(window.location.hostname);
+}
+
+function snapshotEventIdFromLocation(): string | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  const eventId = new URLSearchParams(window.location.search).get("snapshotEventId")?.trim();
+  return eventId || null;
 }
 
 function buildLightAlerts(events: DetectionEvent[], stationById: Map<string, Station>): LightAlertItem[] {
@@ -1023,7 +1058,119 @@ function MapPanel({
   );
 }
 
+function SnapshotViewerPage({ eventId }: { eventId: string }) {
+  const shellRef = useRef<HTMLDivElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const snapshotUrl = useMemo(() => apiUrl(`/api/events/${encodeURIComponent(eventId)}/snapshot`), [eventId]);
+  const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
+  const [message, setMessage] = useState("Loading local snapshot");
+  const [dimensions, setDimensions] = useState<{ width: number; height: number } | null>(null);
+
+  useEffect(() => {
+    const shell = shellRef.current;
+    const canvas = canvasRef.current;
+    const image = new Image();
+    let cancelled = false;
+
+    setStatus("loading");
+    setMessage("Loading local snapshot");
+    setDimensions(null);
+
+    image.crossOrigin = "anonymous";
+    const drawSnapshot = () => {
+      if (cancelled || !shell || !canvas) {
+        return;
+      }
+
+      const width = image.naturalWidth || image.width;
+      const height = image.naturalHeight || image.height;
+      const context = canvas.getContext("2d");
+
+      if (!context || width <= 0 || height <= 0) {
+        setStatus("error");
+        setMessage("Snapshot image could not be rendered.");
+        return;
+      }
+
+      const availableWidth = Math.max(120, shell.clientWidth - 32);
+      const availableHeight = Math.max(120, shell.clientHeight - 32);
+      const scale = Math.min(availableWidth / width, availableHeight / height);
+      const displayWidth = Math.max(1, Math.floor(width * scale));
+      const displayHeight = Math.max(1, Math.floor(height * scale));
+      const pixelRatio = window.devicePixelRatio || 1;
+
+      canvas.width = Math.floor(displayWidth * pixelRatio);
+      canvas.height = Math.floor(displayHeight * pixelRatio);
+      canvas.style.width = `${displayWidth}px`;
+      canvas.style.height = `${displayHeight}px`;
+      context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+      context.clearRect(0, 0, displayWidth, displayHeight);
+      context.drawImage(image, 0, 0, displayWidth, displayHeight);
+      setDimensions({ width, height });
+    };
+
+    image.onload = () => {
+      drawSnapshot();
+      setStatus("ready");
+      setMessage("Snapshot loaded from local backend");
+    };
+
+    image.onerror = () => {
+      if (cancelled) {
+        return;
+      }
+
+      setStatus("error");
+      setMessage("Snapshot not available from the local backend.");
+    };
+
+    window.addEventListener("resize", drawSnapshot);
+    image.src = `${snapshotUrl}?cacheBust=${Date.now()}`;
+
+    return () => {
+      cancelled = true;
+      window.removeEventListener("resize", drawSnapshot);
+      image.onload = null;
+      image.onerror = null;
+      image.src = "";
+    };
+  }, [snapshotUrl]);
+
+  return (
+    <main className="snapshot-viewer-page">
+      <header className="snapshot-viewer-header">
+        <div>
+          <p className="eyebrow">Detection Snapshot</p>
+          <h1>gu<span className="brand-ai">AI</span><span className="brand-i">t</span>a</h1>
+        </div>
+        <a className="quiet-button snapshot-dashboard-link" href="/" title="Back to dashboard">
+          <ArrowLeft size={15} />
+          Dashboard
+        </a>
+      </header>
+
+      <section className="snapshot-viewer-stage" aria-label="Detection snapshot canvas">
+        <div ref={shellRef} className="snapshot-canvas-shell">
+          <canvas ref={canvasRef} className="snapshot-canvas" />
+          {status !== "ready" ? <div className={`snapshot-status ${status}`}>{message}</div> : null}
+        </div>
+      </section>
+
+      <footer className="snapshot-viewer-meta">
+        <span>{eventId}</span>
+        <strong>{message}</strong>
+        {dimensions ? <em>{dimensions.width} x {dimensions.height}</em> : null}
+      </footer>
+    </main>
+  );
+}
+
 export function App() {
+  const snapshotEventId = snapshotEventIdFromLocation();
+  if (snapshotEventId) {
+    return <SnapshotViewerPage eventId={snapshotEventId} />;
+  }
+
   if (shouldRenderPublicStatusPage()) {
     return <PublicStatusPage />;
   }
@@ -1728,7 +1875,21 @@ export function App() {
               <div className="latest-event">
                 <div className="latest-head">
                   <span className={`source-badge ${latestEvent.source}`}>{latestEvent.source}</span>
-                  <strong>{percent(latestEvent.confidence)}</strong>
+                  <div className="latest-actions">
+                    {eventPhotoUrl(latestEvent) ? (
+                      <a
+                        className="photo-icon-link"
+                        href={eventPhotoViewerUrl(latestEvent)}
+                        target="_blank"
+                        rel="noreferrer"
+                        title="Open detection photo"
+                        aria-label="Open detection photo"
+                      >
+                        <Camera size={14} />
+                      </a>
+                    ) : null}
+                    <strong>{percent(latestEvent.confidence)}</strong>
+                  </div>
                 </div>
                 <h3>{stationLabel(latestEvent.stationId, stationById)}</h3>
                 <dl>
@@ -1919,6 +2080,20 @@ export function App() {
               <span>{formatTime(event.observedAt)}</span>
               <strong>{stationLabel(event.stationId, stationById)}</strong>
               <em>{event.source}</em>
+              {eventPhotoUrl(event) ? (
+                <a
+                  className="timeline-photo-link"
+                  href={eventPhotoViewerUrl(event)}
+                  target="_blank"
+                  rel="noreferrer"
+                  title="Open detection photo"
+                  aria-label={`Open photo for ${stationLabel(event.stationId, stationById)}`}
+                >
+                  <Camera size={13} />
+                </a>
+              ) : (
+                <span className="timeline-photo-placeholder" aria-hidden="true" />
+              )}
               <b>{percent(event.confidence)}</b>
             </article>
           ))}
