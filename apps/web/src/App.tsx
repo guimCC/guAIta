@@ -704,7 +704,7 @@ export function App() {
           </div>
         </section>
 
-        <section className="panel-section">
+        <section className="panel-section station-panel">
           <div className="section-heading">
             <MapPin size={16} />
             <h2>Stations</h2>
