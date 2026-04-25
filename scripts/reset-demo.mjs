@@ -1,10 +1,24 @@
 #!/usr/bin/env node
 
-const defaultBaseUrl = process.env.GUAITA_API_BASE_URL ?? process.env.VITE_API_BASE_URL ?? "http://localhost:3000";
+const cliBaseUrl = process.argv[2];
+const defaultBaseUrl =
+  cliBaseUrl ??
+  process.env.GUAITA_API_BASE_URL ??
+  process.env.VITE_API_BASE_URL ??
+  (process.env.PORT ? `http://localhost:${process.env.PORT}` : "http://localhost:3000");
 const baseUrl = defaultBaseUrl.replace(/\/$/, "");
 
 async function request(path, init) {
-  const response = await fetch(`${baseUrl}${path}`, init);
+  let response;
+
+  try {
+    response = await fetch(`${baseUrl}${path}`, init);
+  } catch (error) {
+    throw new Error(
+      `Could not reach guAIta server at ${baseUrl}. Start the backend or pass the right URL: npm run reset-demo -- http://localhost:3001`
+    );
+  }
+
   const text = await response.text();
   let body;
 
@@ -16,6 +30,10 @@ async function request(path, init) {
 
   if (!response.ok || body.ok === false) {
     const message = body.message ?? body.error ?? response.statusText;
+    if (path === "/api/demo/reset" && response.status === 404) {
+      throw new Error("The backend does not expose /api/demo/reset. Restart the server with the latest code before resetting the demo.");
+    }
+
     throw new Error(`${init.method} ${path} failed: ${response.status} ${message}`);
   }
 
@@ -25,7 +43,7 @@ async function request(path, init) {
 async function main() {
   console.log(`Resetting guAIta demo state at ${baseUrl}`);
 
-  const health = await fetch(`${baseUrl}/health`).then((response) => response.json());
+  const health = await request("/health", { method: "GET" });
   if (!health.ok) {
     throw new Error("guAIta server health check failed.");
   }

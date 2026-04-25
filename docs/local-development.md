@@ -52,6 +52,18 @@ Build all packages:
 npm run build
 ```
 
+Reset a running demo without restarting the backend:
+
+```bash
+npm run reset-demo
+```
+
+If the backend is not on `http://localhost:3000`, pass the base URL:
+
+```bash
+npm run reset-demo -- http://localhost:3001
+```
+
 ## Package-Specific Commands
 
 Run only the backend:
