@@ -1629,6 +1629,34 @@ dd {
   object-fit: contain;
 }
 
+.live-box-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.live-box {
+  position: absolute;
+  min-width: 18px;
+  min-height: 18px;
+  border: 2px solid #facc15;
+  box-shadow: 0 0 0 1px rgba(12, 10, 9, 0.68);
+}
+
+.live-box em {
+  position: absolute;
+  top: -1px;
+  left: -1px;
+  border-radius: 0 0 4px 0;
+  padding: 2px 5px;
+  color: #1c1917;
+  background: #facc15;
+  font-size: 0.66rem;
+  font-style: normal;
+  font-weight: 900;
+  line-height: 1;
+}
+
 .live-frame-empty {
   display: grid;
   gap: 8px;

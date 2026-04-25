@@ -161,7 +161,8 @@ Minimum frame payload:
   "contentType": "image/jpeg",
   "encoding": "base64",
   "data": "/9j/4AAQSkZJRgABAQAAAQABAAD...",
-  "boundingBoxesEnabled": false
+  "boundingBoxesEnabled": false,
+  "boxes": []
 }
 ```
 

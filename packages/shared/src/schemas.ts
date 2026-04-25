@@ -59,7 +59,24 @@ export const LiveStreamFrameInputSchema = z
     contentType: z.enum(["image/jpeg"]),
     encoding: z.literal("base64"),
     data: z.string().min(1).max(1_050_000),
-    boundingBoxesEnabled: z.boolean().optional()
+    boundingBoxesEnabled: z.boolean().optional(),
+    frameWidth: z.number().int().positive().optional(),
+    frameHeight: z.number().int().positive().optional(),
+    boxes: z
+      .array(
+        z
+          .object({
+            label: z.string().min(1).optional(),
+            confidence: z.number().min(0).max(1).optional(),
+            x: z.number(),
+            y: z.number(),
+            width: z.number().positive(),
+            height: z.number().positive()
+          })
+          .strict()
+      )
+      .max(20)
+      .optional()
   })
   .strict();
 
@@ -71,7 +88,23 @@ export const LiveStreamFrameSchema = z
     receivedAt: z.string().datetime(),
     contentType: z.enum(["image/jpeg"]),
     dataUrl: z.string().min(1),
-    boundingBoxesEnabled: z.boolean()
+    boundingBoxesEnabled: z.boolean(),
+    frameWidth: z.number().int().positive().optional(),
+    frameHeight: z.number().int().positive().optional(),
+    boxes: z
+      .array(
+        z
+          .object({
+            label: z.string().min(1).optional(),
+            confidence: z.number().min(0).max(1).optional(),
+            x: z.number(),
+            y: z.number(),
+            width: z.number().positive(),
+            height: z.number().positive()
+          })
+          .strict()
+      )
+      .default([])
   })
   .strict();
 

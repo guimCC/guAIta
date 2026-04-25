@@ -72,7 +72,19 @@ Payload:
   "contentType": "image/jpeg",
   "encoding": "base64",
   "data": "/9j/4AAQSkZJRgABAQAAAQABAAD...",
-  "boundingBoxesEnabled": true
+  "boundingBoxesEnabled": true,
+  "frameWidth": 640,
+  "frameHeight": 360,
+  "boxes": [
+    {
+      "label": "0",
+      "confidence": 0.91,
+      "x": 212,
+      "y": 96,
+      "width": 118,
+      "height": 84
+    }
+  ]
 }
 ```
 
@@ -87,7 +99,7 @@ session TTL: 60 seconds, refreshed by dashboard keepalive
 storage: in memory only
 ```
 
-If Button B is enabled on the Arduino, the Python app draws bounding boxes before uploading. The server does not draw or interpret boxes; the dashboard displays the exact JPEG it receives.
+If Button B is enabled on the Arduino, the Python app sends bounding-box metadata with the raw JPEG frame. The dashboard draws the visual boxes as a lightweight overlay. The server does not run inference or draw boxes.
 
 ## Realtime Events
 

@@ -1244,7 +1244,10 @@ function createLiveStreamFrame(input: LiveStreamFrameInput): LiveStreamFrame {
     receivedAt,
     contentType: input.contentType,
     dataUrl: `data:${input.contentType};base64,${decodedFrame.base64Data}`,
-    boundingBoxesEnabled: input.boundingBoxesEnabled ?? false
+    boundingBoxesEnabled: input.boundingBoxesEnabled ?? false,
+    frameWidth: input.frameWidth,
+    frameHeight: input.frameHeight,
+    boxes: input.boxes ?? []
   };
 }
 

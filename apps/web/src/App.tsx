@@ -31,7 +31,7 @@ import maplibregl, {
   type Map as MapLibreMap,
   type MapLayerMouseEvent
 } from "maplibre-gl";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { io, type Socket } from "socket.io-client";
 import {
   SOCKET_EVENTS,
@@ -845,6 +845,30 @@ function streamStatusLabel(status: LiveStreamStatus): string {
   }
 }
 
+type LiveStreamBox = NonNullable<LiveStreamFrame["boxes"]>[number];
+
+function clampPercent(value: number): number {
+  return Math.max(0, Math.min(100, value));
+}
+
+function liveStreamBoxStyle(box: LiveStreamBox, frame: LiveStreamFrame): CSSProperties {
+  const maxBoxValue = Math.max(box.x, box.y, box.width, box.height);
+  const isNormalized = maxBoxValue <= 1.5;
+  const frameWidth = frame.frameWidth ?? 0;
+  const frameHeight = frame.frameHeight ?? 0;
+  const xPct = isNormalized ? box.x * 100 : frameWidth > 0 ? (box.x / frameWidth) * 100 : box.x;
+  const yPct = isNormalized ? box.y * 100 : frameHeight > 0 ? (box.y / frameHeight) * 100 : box.y;
+  const widthPct = isNormalized ? box.width * 100 : frameWidth > 0 ? (box.width / frameWidth) * 100 : box.width;
+  const heightPct = isNormalized ? box.height * 100 : frameHeight > 0 ? (box.height / frameHeight) * 100 : box.height;
+
+  return {
+    left: `${clampPercent(xPct)}%`,
+    top: `${clampPercent(yPct)}%`,
+    width: `${clampPercent(widthPct)}%`,
+    height: `${clampPercent(heightPct)}%`
+  };
+}
+
 function MapPanel({
   stations,
   zones,
@@ -1169,6 +1193,7 @@ function LiveStreamViewer({
   const stationName = station?.name ?? session?.stationId ?? frame?.stationId ?? "Station camera";
   const lastFrameLabel = frame ? formatTime(frame.receivedAt) : "waiting";
   const boundingBoxesEnabled = frame?.boundingBoxesEnabled ?? session?.lastBoundingBoxesEnabled ?? false;
+  const boxes = boundingBoxesEnabled && frame ? frame.boxes : [];
 
   return (
     <section className={`live-viewer ${status}`} aria-label={`Live camera viewer for ${stationName}`}>
@@ -1187,7 +1212,18 @@ function LiveStreamViewer({
 
       <div className="live-frame-stage">
         {frame ? (
-          <img src={frame.dataUrl} alt={`Latest camera frame from ${stationName}`} />
+          <>
+            <img src={frame.dataUrl} alt={`Latest camera frame from ${stationName}`} />
+            {boxes.length ? (
+              <div className="live-box-overlay" aria-hidden="true">
+                {boxes.map((box, index) => (
+                  <span className="live-box" key={`${frame.frameId}-${index}`} style={liveStreamBoxStyle(box, frame)}>
+                    <em>{box.confidence === undefined ? box.label ?? "boar" : `${Math.round(box.confidence * 100)}%`}</em>
+                  </span>
+                ))}
+              </div>
+            ) : null}
+          </>
         ) : (
           <div className="live-frame-empty">
             <Video size={30} />
@@ -1782,19 +1818,6 @@ export function App() {
 
     return () => window.clearTimeout(timeout);
   }, [detectionNotice]);
-
-  useEffect(() => {
-    const interval = window.setInterval(async () => {
-      try {
-        const callResponse = await fetchJson<CallsResponse>("/api/calls?limit=20");
-        setCalls(callResponse.calls);
-      } catch {
-        // Socket.IO remains the primary path; polling is a quiet fallback for call status.
-      }
-    }, 3_000);
-
-    return () => window.clearInterval(interval);
-  }, []);
 
   useEffect(() => {
     if (!expandedStationId || !stationListRef.current) {

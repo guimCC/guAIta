@@ -45,7 +45,7 @@ During local development the server clears runtime demo data on startup by defau
 
 Telemetry follows the same transport and station identity, but it is stored as sensor context instead of as a detection. Devices post periodic readings to `/api/device/telemetry`; the backend stores them, broadcasts `telemetry.created`, and the dashboard shows the latest reading per station.
 
-Live camera viewing is separate from detection ingestion. Dashboard stream sessions are short-lived and in memory only. Device frames are not persisted; only detection snapshots are saved to disk for later evidence review. Button B on the Arduino controls whether bounding boxes are drawn before a frame is uploaded.
+Live camera viewing is separate from detection ingestion. Dashboard stream sessions are short-lived and in memory only. Device frames are not persisted; only detection snapshots are saved to disk for later evidence review. Button B on the Arduino controls whether box metadata is sent and displayed; visual boxes are drawn by the dashboard overlay while inference remains on-device.
 
 ## Proposed Monorepo Layout
 

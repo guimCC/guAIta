@@ -7,7 +7,7 @@ import requests
 import threading
 import time
 from arduino.app_utils import *
-from arduino.app_utils.image import draw_bounding_boxes, get_image_bytes
+from arduino.app_utils.image import get_image_bytes
 from arduino.app_bricks.web_ui import WebUI
 from arduino.app_bricks.video_objectdetection import VideoObjectDetection
 
@@ -40,7 +40,8 @@ camera_is_working = False
 led_state = False
 last_metrics_post = 0
 METRICS_INTERVAL = 30
-STREAM_POLL_INTERVAL = 1.0
+STREAM_ACTIVE_POLL_INTERVAL = 1.0
+STREAM_IDLE_POLL_INTERVAL = 2.0
 STREAM_FRAME_INTERVAL = 0.5
 STREAM_CONNECT_TIMEOUT = 0.5
 STREAM_READ_TIMEOUT = 1.2
@@ -75,19 +76,95 @@ def _safe_float(value):
     except Exception:
         return None
 
-def encode_frame_image(frame: bytes, detections: dict = None, bounding_boxes_enabled: bool = None):
-    draw_boxes = show_bounding_boxes if bounding_boxes_enabled is None else bounding_boxes_enabled
-    if draw_boxes and detections is not None:
-        annotated = draw_bounding_boxes(frame, detections)
-        return get_image_bytes(annotated)
-
+def encode_frame_image(frame: bytes):
     return get_image_bytes(frame)
+
+def _safe_number(value):
+    try:
+        number = float(value)
+        if number != number:
+            return None
+        return number
+    except Exception:
+        return None
+
+def _first_number(record: dict, keys):
+    for key in keys:
+        value = _safe_number(record.get(key))
+        if value is not None:
+            return value
+    return None
+
+def frame_dimensions(frame):
+    shape = getattr(frame, "shape", None)
+    if shape is not None and len(shape) >= 2:
+        return int(shape[1]), int(shape[0])
+
+    width = getattr(frame, "width", None)
+    height = getattr(frame, "height", None)
+    if width and height:
+        return int(width), int(height)
+
+    size = getattr(frame, "size", None)
+    if isinstance(size, tuple) and len(size) >= 2:
+        return int(size[0]), int(size[1])
+
+    return None, None
+
+def extract_stream_boxes(detections: dict):
+    boxes = []
+    if not isinstance(detections, dict):
+        return boxes
+
+    for label, values in detections.items():
+        if not isinstance(values, list):
+            continue
+
+        for value in values:
+            if not isinstance(value, dict):
+                continue
+
+            source = value.get("bounding_box") or value.get("bbox") or value
+            if not isinstance(source, dict):
+                continue
+
+            x = _first_number(source, ["x", "left", "xmin", "x_min"])
+            y = _first_number(source, ["y", "top", "ymin", "y_min"])
+            width = _first_number(source, ["width", "w"])
+            height = _first_number(source, ["height", "h"])
+
+            if width is None or height is None:
+                x2 = _first_number(source, ["x2", "right", "xmax", "x_max"])
+                y2 = _first_number(source, ["y2", "bottom", "ymax", "y_max"])
+                if x is not None and y is not None and x2 is not None and y2 is not None:
+                    width = x2 - x
+                    height = y2 - y
+
+            if x is None or y is None or width is None or height is None or width <= 0 or height <= 0:
+                continue
+
+            confidence = _first_number(value, ["confidence", "score", "probability"])
+            box = {
+                "label": str(label),
+                "x": x,
+                "y": y,
+                "width": width,
+                "height": height,
+            }
+            if confidence is not None:
+                box["confidence"] = confidence
+            boxes.append(box)
+
+            if len(boxes) >= 12:
+                return boxes
+
+    return boxes
 
 def post_detection(best_confidence: float, frame: bytes = None, detections: dict = None):
     snapshot = None
     if frame is not None and detections is not None:
         try:
-            image_bytes = encode_frame_image(frame, detections)
+            image_bytes = encode_frame_image(frame)
             
             snapshot = {
                 "contentType": "image/jpeg",
@@ -189,7 +266,8 @@ def stream_worker_loop():
     while True:
         now = time.time()
 
-        if now - last_stream_poll >= STREAM_POLL_INTERVAL:
+        stream_poll_interval = STREAM_ACTIVE_POLL_INTERVAL if stream_active else STREAM_IDLE_POLL_INTERVAL
+        if now - last_stream_poll >= stream_poll_interval:
             poll_stream_state(session)
             last_stream_poll = now
 
@@ -211,17 +289,24 @@ def stream_worker_loop():
         last_stream_frame_post = now
 
         try:
-            image_bytes = encode_frame_image(frame, detections, bbox_state)
+            image_bytes = encode_frame_image(frame)
+            frame_width, frame_height = frame_dimensions(frame)
+            boxes = extract_stream_boxes(detections) if bbox_state else []
+            payload = {
+                "stationId": STATION_ID,
+                "capturedAt": captured_at or datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+                "contentType": "image/jpeg",
+                "encoding": "base64",
+                "data": base64.b64encode(image_bytes).decode("utf-8"),
+                "boundingBoxesEnabled": bbox_state,
+                "boxes": boxes,
+            }
+            if frame_width is not None and frame_height is not None:
+                payload["frameWidth"] = frame_width
+                payload["frameHeight"] = frame_height
             r = session.post(
                 f"{SERVER_URL}/api/device/stream-frames",
-                json={
-                    "stationId": STATION_ID,
-                    "capturedAt": captured_at or datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
-                    "contentType": "image/jpeg",
-                    "encoding": "base64",
-                    "data": base64.b64encode(image_bytes).decode("utf-8"),
-                    "boundingBoxesEnabled": bbox_state,
-                },
+                json=payload,
                 headers=HEADERS,
                 timeout=(STREAM_CONNECT_TIMEOUT, STREAM_READ_TIMEOUT),
             )
