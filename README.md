@@ -7,6 +7,7 @@ Edge AI monitoring proof of concept for Collserola wild boar detection and opera
 - [SUMMARY.md](SUMMARY.md): team-facing project summary.
 - [CONSTRAINTS.md](CONSTRAINTS.md): hackathon requirements and submission constraints.
 - [challenge-statement.md](challenge-statement.md): challenge statement and hardware context.
+- [.env.example](.env.example): local environment template.
 - [AGENTS.md](AGENTS.md): instructions for AI agents working in this repo.
 - [docs/architecture.md](docs/architecture.md): proposed backend, frontend, realtime, and scenario architecture.
 - [docs/device-contract.md](docs/device-contract.md): Arduino/UNO Q to server JSON contract.
