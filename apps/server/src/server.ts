@@ -21,7 +21,7 @@ import {
   placeElevenLabsOutboundCall
 } from "./domain/civil-protection-calls.js";
 import { assertSource, estimateSeverity, normalizeDetectionEvent } from "./domain/detections.js";
-import { normalizeTelemetryReading } from "./domain/telemetry.js";
+import { hasTelemetryValues, normalizeTelemetryReading } from "./domain/telemetry.js";
 import { ScenarioEngine } from "./scenarios/scenario-engine.js";
 
 function isDuplicateEventError(error: unknown): boolean {
@@ -438,6 +438,14 @@ async function createTelemetryReading(
       ok: false,
       error: "invalid_telemetry_source",
       message: error instanceof Error ? error.message : "Invalid telemetry source."
+    });
+  }
+
+  if (!hasTelemetryValues(parsed.data)) {
+    return reply.code(202).send({
+      ok: true,
+      ignored: true,
+      reason: "no_telemetry_values"
     });
   }
 
