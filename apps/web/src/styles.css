@@ -463,20 +463,41 @@ dd {
 .station-panel {
   flex: 1 1 0;
   min-height: 0;
+  overflow: hidden;
 }
 
 .station-list {
-  display: grid;
-  align-content: start;
+  display: flex;
+  flex-direction: column;
   flex: 1 1 auto;
   gap: 8px;
+  height: 100%;
   min-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
-  padding-right: 2px;
+  overscroll-behavior: contain;
+  padding-right: 4px;
+  scrollbar-color: rgba(245, 158, 11, 0.48) rgba(41, 37, 36, 0.68);
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+}
+
+.station-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.station-list::-webkit-scrollbar-track {
+  background: rgba(41, 37, 36, 0.68);
+  border-radius: 999px;
+}
+
+.station-list::-webkit-scrollbar-thumb {
+  background: rgba(245, 158, 11, 0.48);
+  border-radius: 999px;
 }
 
 .station-card {
+  flex: 0 0 auto;
   overflow: hidden;
   border: 1px solid rgba(120, 113, 108, 0.22);
   border-radius: 8px;
@@ -489,7 +510,7 @@ dd {
   align-items: center;
   gap: 10px;
   width: 100%;
-  min-height: 48px;
+  min-height: 46px;
   border: 0;
   padding: 8px 10px;
   background: transparent;
@@ -508,6 +529,14 @@ dd {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.station-row strong {
+  font-size: 0.88rem;
+}
+
+.station-row span {
+  font-size: 0.72rem;
 }
 
 .station-row em {
@@ -533,8 +562,7 @@ dd {
 }
 
 .station-details.open {
-  display: grid;
-  gap: 8px;
+  display: block;
 }
 
 .station-details dl {
@@ -550,6 +578,7 @@ dd {
 }
 
 .station-details p {
+  margin-top: 8px;
   color: #a8a29e;
   font-size: 0.76rem;
   line-height: 1.35;

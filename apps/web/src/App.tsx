@@ -441,6 +441,7 @@ export function App() {
   const [isPosting, setIsPosting] = useState(false);
   const [isClearingEvents, setIsClearingEvents] = useState(false);
   const [expandedStationId, setExpandedStationId] = useState<string | null>(null);
+  const stationListRef = useRef<HTMLDivElement | null>(null);
 
   const stationById = useMemo(() => new Map(stations.map((station) => [station.id, station])), [stations]);
   const latestEvent = events[0];
@@ -508,6 +509,20 @@ export function App() {
       socket.disconnect();
     };
   }, []);
+
+  useEffect(() => {
+    if (!expandedStationId || !stationListRef.current) {
+      return;
+    }
+
+    const stationCard = Array.from(stationListRef.current.querySelectorAll<HTMLElement>("[data-station-id]"))
+      .find((element) => element.dataset.stationId === expandedStationId);
+
+    stationCard?.scrollIntoView({
+      block: "start",
+      behavior: "smooth"
+    });
+  }, [expandedStationId]);
 
   async function simulateDetection() {
     const targetStation =
@@ -709,9 +724,9 @@ export function App() {
             <MapPin size={16} />
             <h2>Stations</h2>
           </div>
-          <div className="station-list">
+          <div className="station-list" ref={stationListRef}>
             {stations.map((station) => (
-              <article className="station-card" key={station.id}>
+              <article className="station-card" data-station-id={station.id} key={station.id}>
                 <button
                   className="station-row"
                   type="button"
