@@ -1,9 +1,11 @@
 import {
   Activity,
+  Battery,
   BellRing,
   ChevronDown,
   CheckCircle2,
   Clock3,
+  Droplets,
   FastForward,
   MapPin,
   Pause,
@@ -12,6 +14,9 @@ import {
   RadioTower,
   RotateCcw,
   ShieldAlert,
+  Signal,
+  Sun,
+  Thermometer,
   Trash2,
   Wifi,
   WifiOff
@@ -25,6 +30,7 @@ import {
   type DetectionEvent,
   type ScenarioState,
   type Station,
+  type TelemetryReading,
   type Zone
 } from "@guaita/shared";
 import type { Feature, FeatureCollection, Point, Polygon } from "geojson";
@@ -42,6 +48,10 @@ interface ZonesResponse {
 
 interface EventsResponse {
   events: DetectionEvent[];
+}
+
+interface TelemetryResponse {
+  telemetry: TelemetryReading[];
 }
 
 interface CallsResponse {
@@ -128,6 +138,10 @@ function upsertCall(calls: CivilProtectionCall[], call: CivilProtectionCall): Ci
   return [call, ...calls.filter((existing) => existing.id !== call.id)].slice(0, 50);
 }
 
+function upsertTelemetry(readings: TelemetryReading[], reading: TelemetryReading): TelemetryReading[] {
+  return [reading, ...readings.filter((existing) => existing.telemetryId !== reading.telemetryId)].slice(0, 200);
+}
+
 function formatTime(value: string): string {
   return new Intl.DateTimeFormat(undefined, {
     hour: "2-digit",
@@ -138,6 +152,26 @@ function formatTime(value: string): string {
 
 function percent(value: number): string {
   return `${Math.round(value * 100)}%`;
+}
+
+function formatTemperature(value: number | undefined): string {
+  return value === undefined ? "n/a" : `${value.toFixed(1)} C`;
+}
+
+function formatHumidity(value: number | undefined): string {
+  return value === undefined ? "n/a" : `${Math.round(value)}%`;
+}
+
+function formatLight(value: number | undefined): string {
+  return value === undefined ? "n/a" : `${Math.round(value)} lux`;
+}
+
+function formatBattery(value: number | undefined): string {
+  return value === undefined ? "n/a" : `${Math.round(value)}%`;
+}
+
+function formatSignal(value: number | undefined): string {
+  return value === undefined ? "n/a" : `${Math.round(value)} dBm`;
 }
 
 function stationLabel(stationId: string, stationById: Map<string, Station>): string {
@@ -519,6 +553,7 @@ export function App() {
   const [stations, setStations] = useState<Station[]>([]);
   const [zones, setZones] = useState<Zone[]>([]);
   const [events, setEvents] = useState<DetectionEvent[]>([]);
+  const [telemetryReadings, setTelemetryReadings] = useState<TelemetryReading[]>([]);
   const [calls, setCalls] = useState<CivilProtectionCall[]>([]);
   const [scenarioState, setScenarioState] = useState<ScenarioState | null>(null);
   const [connectionState, setConnectionState] = useState<ConnectionState>("connecting");
@@ -533,10 +568,23 @@ export function App() {
   const stationListRef = useRef<HTMLDivElement | null>(null);
 
   const stationById = useMemo(() => new Map(stations.map((station) => [station.id, station])), [stations]);
+  const latestTelemetryByStation = useMemo(() => {
+    const latest = new Map<string, TelemetryReading>();
+
+    for (const reading of telemetryReadings) {
+      const existing = latest.get(reading.stationId);
+      if (!existing || new Date(reading.observedAt).getTime() > new Date(existing.observedAt).getTime()) {
+        latest.set(reading.stationId, reading);
+      }
+    }
+
+    return latest;
+  }, [telemetryReadings]);
   const latestEvent = events[0];
   const activeAlertEvent = latestEvent && !dismissedAlertEventIds.has(latestEvent.eventId) ? latestEvent : undefined;
   const latestCall = latestCallForEvent(calls, activeAlertEvent?.eventId);
   const activeStationCount = stations.filter((station) => station.status === "online").length;
+  const telemetryStationCount = latestTelemetryByStation.size;
   const alertTrackingItems = useMemo(
     () => buildAlertTrackingItems(activeAlertEvent, stationById, latestCall),
     [activeAlertEvent, latestCall, stationById]
@@ -547,10 +595,11 @@ export function App() {
 
     async function loadInitialData() {
       try {
-        const [stationResponse, zoneResponse, eventResponse, callResponse, scenarioResponse] = await Promise.all([
+        const [stationResponse, zoneResponse, eventResponse, telemetryResponse, callResponse, scenarioResponse] = await Promise.all([
           fetchJson<StationsResponse>("/api/stations"),
           fetchJson<ZonesResponse>("/api/zones"),
           fetchJson<EventsResponse>("/api/events?limit=50"),
+          fetchJson<TelemetryResponse>("/api/telemetry/latest"),
           fetchJson<CallsResponse>("/api/calls?limit=20"),
           fetchJson<ScenarioResponse>("/api/scenario/state")
         ]);
@@ -562,6 +611,7 @@ export function App() {
         setStations(stationResponse.stations);
         setZones(zoneResponse.zones);
         setEvents(eventResponse.events);
+        setTelemetryReadings(telemetryResponse.telemetry);
         setCalls(callResponse.calls);
         setScenarioState(scenarioResponse.scenario);
         setError(null);
@@ -604,6 +654,9 @@ export function App() {
         nextIds.delete(event.eventId);
         return nextIds;
       });
+    });
+    socket.on(SOCKET_EVENTS.telemetryCreated, (reading: TelemetryReading) => {
+      setTelemetryReadings((currentReadings) => upsertTelemetry(currentReadings, reading));
     });
     socket.on(SOCKET_EVENTS.eventsCleared, () => {
       setEvents([]);
@@ -924,8 +977,8 @@ export function App() {
               <strong>{zones.length}</strong>
             </div>
             <div className="metric-card">
-              <span>Events</span>
-              <strong>{events.length}</strong>
+              <span>Telemetry</span>
+              <strong>{telemetryStationCount}</strong>
             </div>
           </div>
         </section>
@@ -958,12 +1011,20 @@ export function App() {
                   <dd>{latestEvent.direction ?? "unknown"}</dd>
                 </div>
                 <div>
+                  <dt>Temperature</dt>
+                  <dd>{formatTemperature(latestEvent.temperatureC)}</dd>
+                </div>
+                <div>
                   <dt>Humidity</dt>
-                  <dd>{latestEvent.humidityPct ? `${latestEvent.humidityPct}%` : "n/a"}</dd>
+                  <dd>{formatHumidity(latestEvent.humidityPct)}</dd>
                 </div>
                 <div>
                   <dt>Light</dt>
-                  <dd>{latestEvent.lightLux ? `${latestEvent.lightLux} lux` : "n/a"}</dd>
+                  <dd>{formatLight(latestEvent.lightLux)}</dd>
+                </div>
+                <div>
+                  <dt>Battery</dt>
+                  <dd>{formatBattery(latestEvent.batteryPct)}</dd>
                 </div>
               </dl>
             </div>
@@ -1044,45 +1105,80 @@ export function App() {
             <h2>Stations</h2>
           </div>
           <div className="station-list" ref={stationListRef}>
-            {stations.map((station) => (
-              <article className="station-card" data-station-id={station.id} key={station.id}>
-                <button
-                  className="station-row"
-                  type="button"
-                  aria-expanded={expandedStationId === station.id}
-                  onClick={() => setExpandedStationId((currentId) => (currentId === station.id ? null : station.id))}
-                >
-                  <span className={`station-dot ${station.status}`} />
-                  <div>
-                    <strong>{station.name}</strong>
-                    <span>{station.type}</span>
+            {stations.map((station) => {
+              const telemetry = latestTelemetryByStation.get(station.id);
+              const batteryPct = telemetry?.batteryPct ?? station.batteryPct;
+
+              return (
+                <article className="station-card" data-station-id={station.id} key={station.id}>
+                  <button
+                    className="station-row"
+                    type="button"
+                    aria-expanded={expandedStationId === station.id}
+                    onClick={() => setExpandedStationId((currentId) => (currentId === station.id ? null : station.id))}
+                  >
+                    <span className={`station-dot ${station.status}`} />
+                    <div>
+                      <strong>{station.name}</strong>
+                      <span>{station.type}</span>
+                    </div>
+                    <em>{formatBattery(batteryPct)}</em>
+                    <ChevronDown className="station-chevron" size={15} />
+                  </button>
+                  <div className={expandedStationId === station.id ? "station-details open" : "station-details"}>
+                    <dl>
+                      <div>
+                        <dt>Status</dt>
+                        <dd>{station.status}</dd>
+                      </div>
+                      <div>
+                        <dt>Station ID</dt>
+                        <dd>{station.id}</dd>
+                      </div>
+                      <div>
+                        <dt>Zone</dt>
+                        <dd>{station.zoneId ?? "unassigned"}</dd>
+                      </div>
+                      <div>
+                        <dt>Location</dt>
+                        <dd>{station.latitude.toFixed(4)}, {station.longitude.toFixed(4)}</dd>
+                      </div>
+                    </dl>
+                    {telemetry ? (
+                      <div className="telemetry-grid" aria-label={`Latest telemetry for ${station.name}`}>
+                        <div>
+                          <Thermometer size={14} />
+                          <span>{formatTemperature(telemetry.temperatureC)}</span>
+                        </div>
+                        <div>
+                          <Droplets size={14} />
+                          <span>{formatHumidity(telemetry.humidityPct)}</span>
+                        </div>
+                        <div>
+                          <Sun size={14} />
+                          <span>{formatLight(telemetry.lightLux)}</span>
+                        </div>
+                        <div>
+                          <Battery size={14} />
+                          <span>{formatBattery(telemetry.batteryPct)}</span>
+                        </div>
+                        <div>
+                          <Signal size={14} />
+                          <span>{formatSignal(telemetry.rssiDbm)}</span>
+                        </div>
+                        <div>
+                          <Clock3 size={14} />
+                          <span>{formatTime(telemetry.observedAt)}</span>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="station-telemetry-empty">No sensor reading yet</div>
+                    )}
+                    {station.description ? <p>{station.description}</p> : null}
                   </div>
-                  <em>{station.batteryPct ?? 0}%</em>
-                  <ChevronDown className="station-chevron" size={15} />
-                </button>
-                <div className={expandedStationId === station.id ? "station-details open" : "station-details"}>
-                  <dl>
-                    <div>
-                      <dt>Status</dt>
-                      <dd>{station.status}</dd>
-                    </div>
-                    <div>
-                      <dt>Station ID</dt>
-                      <dd>{station.id}</dd>
-                    </div>
-                    <div>
-                      <dt>Zone</dt>
-                      <dd>{station.zoneId ?? "unassigned"}</dd>
-                    </div>
-                    <div>
-                      <dt>Location</dt>
-                      <dd>{station.latitude.toFixed(4)}, {station.longitude.toFixed(4)}</dd>
-                    </div>
-                  </dl>
-                  {station.description ? <p>{station.description}</p> : null}
-                </div>
-              </article>
-            ))}
+                </article>
+              );
+            })}
           </div>
         </section>
       </aside>

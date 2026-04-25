@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This document defines how the Arduino UNO Q or any simulator sends detection events to the guAIta server.
+This document defines how the Arduino UNO Q or any simulator sends detection events and telemetry readings to the guAIta server.
 
 The same contract must be used by:
 
@@ -54,6 +54,72 @@ Required headers:
 ```text
 Authorization: Bearer {DEVICE_TOKEN}
 Content-Type: application/json
+```
+
+## Telemetry Endpoint
+
+Stations may report environmental and device-health readings even when no wild boar is detected.
+
+Production/demo tunnel:
+
+```text
+POST https://uncordial-mathias-infirmly.ngrok-free.dev/api/device/telemetry
+```
+
+Local development:
+
+```text
+POST http://localhost:3000/api/device/telemetry
+```
+
+Use the same authorization and content-type headers as detection events.
+
+Minimum telemetry payload:
+
+```json
+{
+  "stationId": "live-device-01",
+  "source": "device",
+  "temperatureC": 17.4
+}
+```
+
+Full telemetry payload:
+
+```json
+{
+  "telemetryId": "tel_live_device_001",
+  "stationId": "live-device-01",
+  "observedAt": "2026-04-25T10:42:00.000Z",
+  "source": "device",
+  "temperatureC": 17.4,
+  "humidityPct": 68,
+  "lightLux": 310,
+  "batteryPct": 82,
+  "rssiDbm": -64
+}
+```
+
+At least one reading field is required. If `telemetryId` or `observedAt` are missing, the server may generate them.
+
+Expected telemetry response:
+
+```json
+{
+  "ok": true,
+  "telemetryId": "tel_live_device_001",
+  "telemetry": {
+    "telemetryId": "tel_live_device_001",
+    "stationId": "live-device-01",
+    "observedAt": "2026-04-25T10:42:00.000Z",
+    "source": "device",
+    "temperatureC": 17.4,
+    "humidityPct": 68,
+    "lightLux": 310,
+    "batteryPct": 82,
+    "rssiDbm": -64
+  }
+}
 ```
 
 ## Minimum Payload
@@ -111,6 +177,7 @@ If `eventId` or `observedAt` are missing, the server may generate them.
 - `humidityPct`: optional humidity reading from `0` to `100`.
 - `lightLux`: optional non-negative light reading.
 - `batteryPct`: optional battery percentage from `0` to `100`.
+- `rssiDbm`: optional radio signal strength in dBm, used only by telemetry readings.
 - `model`: optional local model metadata.
 
 ## Allowed Values
@@ -260,12 +327,34 @@ def send_detection(confidence: float):
     )
     response.raise_for_status()
     return response.json()
+
+def send_telemetry(temperature_c: float, humidity_pct: float):
+    payload = {
+        "stationId": STATION_ID,
+        "source": "device",
+        "observedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "temperatureC": temperature_c,
+        "humidityPct": humidity_pct
+    }
+
+    response = requests.post(
+        f"{SERVER_URL}/api/device/telemetry",
+        headers={
+            "Authorization": f"Bearer {DEVICE_TOKEN}",
+            "Content-Type": "application/json"
+        },
+        data=json.dumps(payload),
+        timeout=5
+    )
+    response.raise_for_status()
+    return response.json()
 ```
 
 ## Hardware Team Checklist
 
 - Read `serverUrl`, `deviceToken`, and `stationId` from config.
 - Send HTTP JSON to `/api/device/events`.
+- Send periodic sensor JSON to `/api/device/telemetry` when readings are available.
 - Use `source: "device"`.
 - Send only metadata, not video.
 - Keep `confidence` between `0` and `1`.

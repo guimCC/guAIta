@@ -18,6 +18,8 @@ import type {
   StationSchema,
   StationStatusSchema,
   StationTypeSchema,
+  TelemetryReadingInputSchema,
+  TelemetryReadingSchema,
   ZoneKindSchema,
   ZoneSchema
 } from "./schemas.js";
@@ -35,6 +37,8 @@ export type Direction = z.infer<typeof DirectionSchema>;
 
 export type DetectionEvent = z.infer<typeof DetectionEventSchema>;
 export type DetectionEventInput = z.infer<typeof DetectionEventInputSchema>;
+export type TelemetryReading = z.infer<typeof TelemetryReadingSchema>;
+export type TelemetryReadingInput = z.infer<typeof TelemetryReadingInputSchema>;
 export type Station = z.infer<typeof StationSchema>;
 export type Zone = z.infer<typeof ZoneSchema>;
 export type Alert = z.infer<typeof AlertSchema>;
