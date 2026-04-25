@@ -4,6 +4,7 @@
 from datetime import datetime, UTC
 import base64
 import requests
+import threading
 import time
 from arduino.app_utils import *
 from arduino.app_utils.image import draw_bounding_boxes, get_image_bytes
@@ -30,6 +31,7 @@ last_frame = None
 last_detections = None
 last_stream_poll = 0
 last_stream_frame_post = 0
+last_state_print = 0
 
 # --- State ---
 active = False
@@ -40,9 +42,19 @@ last_metrics_post = 0
 METRICS_INTERVAL = 30
 STREAM_POLL_INTERVAL = 1.0
 STREAM_FRAME_INTERVAL = 0.5
-STREAM_POST_TIMEOUT = 5
+STREAM_CONNECT_TIMEOUT = 0.5
+STREAM_READ_TIMEOUT = 1.2
+STREAM_WORKER_SLEEP = 0.03
+STATE_PRINT_INTERVAL = 2.0
 stream_active = False
 stream_frame_interval = STREAM_FRAME_INTERVAL
+stream_lock = threading.Lock()
+latest_stream_frame = None
+latest_stream_detections = None
+latest_stream_captured_at = None
+latest_stream_bbox_state = False
+latest_stream_sequence = 0
+posted_stream_sequence = 0
 
 latest_metrics = {
     "temperatureC": None,
@@ -63,8 +75,9 @@ def _safe_float(value):
     except Exception:
         return None
 
-def encode_frame_image(frame: bytes, detections: dict = None):
-    if show_bounding_boxes and detections is not None:
+def encode_frame_image(frame: bytes, detections: dict = None, bounding_boxes_enabled: bool = None):
+    draw_boxes = show_bounding_boxes if bounding_boxes_enabled is None else bounding_boxes_enabled
+    if draw_boxes and detections is not None:
         annotated = draw_bounding_boxes(frame, detections)
         return get_image_bytes(annotated)
 
@@ -129,15 +142,16 @@ def post_telemetry():
     except Exception as e:
         print(f"[telemetry] failed: {e}")
 
-def poll_stream_state():
+def poll_stream_state(session=None):
     global stream_active, stream_frame_interval
 
+    client = session or requests
     try:
-        r = requests.get(
+        r = client.get(
             f"{SERVER_URL}/api/device/stream-state",
             params={"stationId": STATION_ID},
             headers=HEADERS,
-            timeout=3,
+            timeout=(STREAM_CONNECT_TIMEOUT, STREAM_READ_TIMEOUT),
         )
         if r.status_code != 200:
             print(f"[stream] state status={r.status_code} body={r.text}")
@@ -154,37 +168,71 @@ def poll_stream_state():
         print(f"[stream] state poll failed: {e}")
 
 def maybe_post_stream_frame(frame: bytes, detections: dict = None):
-    global last_stream_frame_post, stream_active
+    global latest_stream_frame, latest_stream_detections, latest_stream_captured_at
+    global latest_stream_bbox_state, latest_stream_sequence
 
     if not stream_active or frame is None:
         return
 
-    now = time.time()
-    if now - last_stream_frame_post < stream_frame_interval:
-        return
+    with stream_lock:
+        latest_stream_frame = frame
+        latest_stream_detections = detections
+        latest_stream_captured_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        latest_stream_bbox_state = show_bounding_boxes
+        latest_stream_sequence += 1
 
-    last_stream_frame_post = now
+def stream_worker_loop():
+    global last_stream_poll, last_stream_frame_post, posted_stream_sequence, stream_active
 
-    try:
-        image_bytes = encode_frame_image(frame, detections)
-        r = requests.post(
-            f"{SERVER_URL}/api/device/stream-frames",
-            json={
-                "stationId": STATION_ID,
-                "capturedAt": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
-                "contentType": "image/jpeg",
-                "encoding": "base64",
-                "data": base64.b64encode(image_bytes).decode("utf-8"),
-                "boundingBoxesEnabled": show_bounding_boxes,
-            },
-            headers=HEADERS,
-            timeout=STREAM_POST_TIMEOUT,
-        )
-        print(f"[stream] frame status={r.status_code}")
-        if r.status_code == 202:
-            stream_active = False
-    except Exception as e:
-        print(f"[stream] frame post failed: {e}")
+    session = requests.Session()
+
+    while True:
+        now = time.time()
+
+        if now - last_stream_poll >= STREAM_POLL_INTERVAL:
+            poll_stream_state(session)
+            last_stream_poll = now
+
+        if not stream_active or now - last_stream_frame_post < stream_frame_interval:
+            time.sleep(STREAM_WORKER_SLEEP)
+            continue
+
+        with stream_lock:
+            frame = latest_stream_frame
+            detections = latest_stream_detections
+            captured_at = latest_stream_captured_at
+            bbox_state = latest_stream_bbox_state
+            sequence = latest_stream_sequence
+
+        if frame is None or sequence == posted_stream_sequence:
+            time.sleep(STREAM_WORKER_SLEEP)
+            continue
+
+        last_stream_frame_post = now
+
+        try:
+            image_bytes = encode_frame_image(frame, detections, bbox_state)
+            r = session.post(
+                f"{SERVER_URL}/api/device/stream-frames",
+                json={
+                    "stationId": STATION_ID,
+                    "capturedAt": captured_at or datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+                    "contentType": "image/jpeg",
+                    "encoding": "base64",
+                    "data": base64.b64encode(image_bytes).decode("utf-8"),
+                    "boundingBoxesEnabled": bbox_state,
+                },
+                headers=HEADERS,
+                timeout=(STREAM_CONNECT_TIMEOUT, STREAM_READ_TIMEOUT),
+            )
+            posted_stream_sequence = sequence
+            print(f"[stream] frame status={r.status_code}")
+            if r.status_code == 202:
+                stream_active = False
+        except Exception as e:
+            print(f"[stream] frame post failed: {e}")
+
+        time.sleep(STREAM_WORKER_SLEEP)
 
 def _bridge_get(key, call_name):
     try:
@@ -193,7 +241,7 @@ def _bridge_get(key, call_name):
         print(f"[bridge] {call_name} failed: {e}")
 
 def loop():
-    global led_state, camera_is_working, last_metrics_post, active, show_bounding_boxes, last_stream_poll
+    global led_state, camera_is_working, last_metrics_post, active, show_bounding_boxes, last_state_print
 
     try:
         active = bool(Bridge.call("get_active_state"))
@@ -218,16 +266,14 @@ def loop():
     _bridge_get("lightLux", "get_light")
     _bridge_get("distanceMm", "get_distance")
 
-    print(f"[state] active={active}, show_bbox={show_bounding_boxes}, metrics={latest_metrics}")
-
     now = time.time()
+    if now - last_state_print >= STATE_PRINT_INTERVAL:
+        print(f"[state] active={active}, show_bbox={show_bounding_boxes}, stream={stream_active}, metrics={latest_metrics}")
+        last_state_print = now
+
     if active and now - last_metrics_post >= METRICS_INTERVAL:
         post_telemetry()
         last_metrics_post = now
-
-    if now - last_stream_poll >= STREAM_POLL_INTERVAL:
-        poll_stream_state()
-        last_stream_poll = now
 
     time.sleep(0.1 if camera_is_working else 1.0)
 
@@ -280,4 +326,5 @@ detector = VideoObjectDetection(confidence=0.1, debounce_sec=0.0, camera_preview
 detector.on_detect_all(on_all_detections)
 ui.on_message("override_th", lambda sid, threshold: detector.override_threshold(threshold))
 
+threading.Thread(target=stream_worker_loop, daemon=True).start()
 App.run(user_loop=loop)
