@@ -223,6 +223,8 @@ camera frame
 
 Do not stream all video to the server for the MVP. Send compact metadata only.
 
+For planned optional snapshot upload after a detection, see [Device Image Snapshot Contract](device-image-snapshot-contract.md).
+
 ## Python Sender Example
 
 ```python

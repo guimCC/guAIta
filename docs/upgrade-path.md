@@ -49,9 +49,17 @@ The MVP should use prebuilt stations and zones.
 
 ## Media Uploads
 
-Deferred event media features:
+Deferred event media features are documented in [Device Image Snapshot Contract](device-image-snapshot-contract.md).
 
-- upload image snapshot with detection
+Planned approach:
+
+- send metadata first
+- upload one optional JPEG snapshot after receiving `eventId`
+- store snapshots locally under `data/event-images/`
+- expose snapshots through `/api/events/{eventId}/snapshot`
+
+Additional future media features:
+
 - attach short video clip
 - blur people or private areas
 - show model bounding boxes on snapshots
