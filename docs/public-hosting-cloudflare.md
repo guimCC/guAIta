@@ -133,7 +133,7 @@ The Arduino/UNO Q sender should use:
 {
   "serverUrl": "https://api.guaita.biz",
   "deviceToken": "same value as DEVICE_TOKEN in .env",
-  "stationId": "live-device-01"
+  "stationId": "collserola-control-02"
 }
 ```
 
@@ -174,7 +174,7 @@ curl -X POST https://api.guaita.biz/api/device/events \
   -H "Content-Type: application/json" \
   -d '{
     "eventId": "evt_cloudflare_demo_test",
-    "stationId": "live-device-01",
+    "stationId": "collserola-control-02",
     "observedAt": "2026-04-25T10:42:12.000Z",
     "source": "device",
     "species": "wild_boar",

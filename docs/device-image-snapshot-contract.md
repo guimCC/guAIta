@@ -35,7 +35,7 @@ Example:
 
 ```json
 {
-  "stationId": "live-device-01",
+  "stationId": "collserola-control-02",
   "source": "device",
   "species": "wild_boar",
   "confidence": 0.91,
@@ -52,7 +52,7 @@ Response:
   "severity": "high",
   "event": {
     "eventId": "evt_device_m3abc123_d4e5f6a7",
-    "stationId": "live-device-01",
+    "stationId": "collserola-control-02",
     "observedAt": "2026-04-25T10:42:12.000Z",
     "source": "device",
     "species": "wild_boar",
@@ -171,7 +171,7 @@ import requests
 
 SERVER_URL = "https://uncordial-mathias-infirmly.ngrok-free.dev"
 DEVICE_TOKEN = "demo-device-token"
-STATION_ID = "live-device-01"
+STATION_ID = "collserola-control-02"
 
 def send_detection_with_snapshot(confidence: float, snapshot_path: str):
     event_response = requests.post(

@@ -35,8 +35,13 @@ import {
 } from "@guaita/shared";
 import type { Feature, FeatureCollection, Point, Polygon } from "geojson";
 import { apiBaseUrl, getMapStyleUrl, mapInitialView, socketUrl } from "./mapConfig";
+import { PublicStatusPage } from "./PublicStatusPage";
 
 type ConnectionState = "connecting" | "connected" | "offline";
+
+const DEMO_DETECTION_STATION_ID = "collserola-control-02";
+const DETECTION_FLASH_TTL_MS = 6_500;
+const DETECTION_FLASH_INTERVAL_MS = 80;
 
 interface StationsResponse {
   stations: Station[];
@@ -102,6 +107,11 @@ interface AlertTrackingItem {
   status: string;
   detail: string;
   tone: "standby" | "queued" | "active";
+}
+
+interface DetectionFlash {
+  event: DetectionEvent;
+  receivedAtMs: number;
 }
 
 const emptyPointCollection: FeatureCollection<Point> = {
@@ -261,6 +271,25 @@ function latestCallForEvent(calls: CivilProtectionCall[], eventId: string | unde
   return eventId ? calls.find((call) => call.eventId === eventId) : undefined;
 }
 
+function controlStationNumber(station: Pick<Station, "id" | "name">): number | undefined {
+  const nameMatch = station.name.match(/Control Station\s+(\d+)/i);
+  if (nameMatch?.[1]) {
+    return Number(nameMatch[1]);
+  }
+
+  const idMatch = station.id.match(/collserola-control-(\d+)/i);
+  return idMatch?.[1] ? Number(idMatch[1]) : undefined;
+}
+
+function isRiskControlStation(station: Pick<Station, "id" | "name">): boolean {
+  const stationNumber = controlStationNumber(station);
+  return stationNumber !== undefined && stationNumber >= 1 && stationNumber <= 12;
+}
+
+function isDeviceStation(station: Pick<Station, "id" | "name">): boolean {
+  return station.id === DEMO_DETECTION_STATION_ID || station.name === "Control Station 02";
+}
+
 function formatScenarioClock(scenarioState: ScenarioState | null): string {
   const value = scenarioState?.virtualNowIso ?? "2026-04-25T02:30:00.000Z";
 
@@ -283,6 +312,18 @@ function scenarioProgress(scenarioState: ScenarioState | null): number {
   }
 
   return Math.min(100, Math.max(0, (scenarioState.currentTimeMs / scenarioState.durationMs) * 100));
+}
+
+function shouldRenderPublicStatusPage(): boolean {
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  if (new URLSearchParams(window.location.search).get("view") === "public") {
+    return true;
+  }
+
+  return ["guaita.biz", "www.guaita.biz"].includes(window.location.hostname);
 }
 
 function buildAlertTrackingItems(
@@ -337,6 +378,8 @@ function buildStationFeatures(stations: Station[]): FeatureCollection<Point> {
       name: station.name,
       type: station.type,
       status: station.status,
+      device: isDeviceStation(station),
+      risk: isRiskControlStation(station),
       batteryPct: station.batteryPct ?? null
     }
   }));
@@ -368,14 +411,26 @@ function buildZoneFeatures(zones: Zone[]): FeatureCollection<Polygon> {
   };
 }
 
-function buildEventFeatures(events: DetectionEvent[], stationById: Map<string, Station>): FeatureCollection<Point> {
+function buildEventFeatures(
+  flashes: DetectionFlash[],
+  stationById: Map<string, Station>,
+  nowMs: number
+): FeatureCollection<Point> {
   const features: Feature<Point>[] = [];
 
-  for (const event of events.slice(0, 40)) {
+  for (const flash of flashes) {
+    const event = flash.event;
     const station = stationById.get(event.stationId);
-    if (!station) {
+    const ageMs = nowMs - flash.receivedAtMs;
+
+    if (!station || ageMs < 0 || ageMs > DETECTION_FLASH_TTL_MS) {
       continue;
     }
+
+    const progress = Math.min(1, ageMs / DETECTION_FLASH_TTL_MS);
+    const decay = Math.max(0, 1 - progress);
+    const sourceWeight = event.source === "scenario" ? 0.72 : 1;
+    const confidenceWeight = 0.75 + event.confidence * 0.25;
 
     features.push({
       type: "Feature",
@@ -388,7 +443,12 @@ function buildEventFeatures(events: DetectionEvent[], stationById: Map<string, S
         stationId: event.stationId,
         source: event.source,
         confidence: event.confidence,
-        observedAt: event.observedAt
+        observedAt: event.observedAt,
+        ringRadius: 11 + progress * 38 * confidenceWeight,
+        ringOpacity: 0.4 * sourceWeight * Math.pow(decay, 1.45),
+        strokeOpacity: 0.55 * sourceWeight * Math.pow(decay, 1.1),
+        coreRadius: 7 - progress * 2,
+        coreOpacity: 0.95 * sourceWeight * Math.pow(decay, 0.82)
       }
     });
   }
@@ -417,11 +477,13 @@ function MapPanel({
   const mapRef = useRef<MapLibreMap | null>(null);
   const [mapReady, setMapReady] = useState(false);
   const [mapError, setMapError] = useState<string | null>(null);
+  const flashesRef = useRef<Map<string, DetectionFlash>>(new Map());
+  const hydratedEventsRef = useRef(false);
+  const seenEventIdsRef = useRef<Set<string>>(new Set());
 
   const stationById = useMemo(() => new Map(stations.map((station) => [station.id, station])), [stations]);
   const stationFeatures = useMemo(() => buildStationFeatures(stations), [stations]);
   const zoneFeatures = useMemo(() => buildZoneFeatures(zones), [zones]);
-  const eventFeatures = useMemo(() => buildEventFeatures(events, stationById), [events, stationById]);
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) {
@@ -485,27 +547,49 @@ function MapPanel({
         source: "stations",
         paint: {
           "circle-color": [
-            "match",
-            ["get", "type"],
-            "frontier",
-            "#f59e0b",
-            "containment",
-            "#84cc16",
-            "urban",
+            "case",
+            ["==", ["get", "device"], true],
+            "#facc15",
+            ["==", ["get", "risk"], true],
             "#ef4444",
-            "#22c55e"
+            [
+              "match",
+              ["get", "type"],
+              "frontier",
+              "#f59e0b",
+              "containment",
+              "#84cc16",
+              "urban",
+              "#ef4444",
+              "#22c55e"
+            ]
           ],
           "circle-radius": [
-            "match",
-            ["get", "status"],
-            "degraded",
-            7,
-            "offline",
-            6,
-            8
+            "case",
+            ["==", ["get", "device"], true],
+            10,
+            [
+              "match",
+              ["get", "status"],
+              "degraded",
+              7,
+              "offline",
+              6,
+              8
+            ]
           ],
-          "circle-stroke-color": "#1c1917",
-          "circle-stroke-width": 2
+          "circle-stroke-color": [
+            "case",
+            ["==", ["get", "device"], true],
+            "#713f12",
+            "#1c1917"
+          ],
+          "circle-stroke-width": [
+            "case",
+            ["==", ["get", "device"], true],
+            3,
+            2
+          ]
         }
       });
       map.addLayer({
@@ -542,8 +626,20 @@ function MapPanel({
             "#f59e0b",
             "#22c55e"
           ],
-          "circle-opacity": 0.28,
-          "circle-radius": ["interpolate", ["linear"], ["get", "confidence"], 0, 16, 1, 34]
+          "circle-radius": ["get", "ringRadius"],
+          "circle-opacity": ["get", "ringOpacity"],
+          "circle-blur": 0.45,
+          "circle-stroke-color": [
+            "match",
+            ["get", "source"],
+            "device",
+            "#7f1d1d",
+            "manual",
+            "#92400e",
+            "#14532d"
+          ],
+          "circle-stroke-opacity": ["get", "strokeOpacity"],
+          "circle-stroke-width": 1.2
         }
       });
       map.addLayer({
@@ -551,9 +647,19 @@ function MapPanel({
         type: "circle",
         source: "events",
         paint: {
-          "circle-color": "#fef3c7",
-          "circle-radius": 5,
-          "circle-stroke-color": "#7f1d1d",
+          "circle-color": [
+            "match",
+            ["get", "source"],
+            "device",
+            "#fecaca",
+            "manual",
+            "#fef3c7",
+            "#bbf7d0"
+          ],
+          "circle-radius": ["get", "coreRadius"],
+          "circle-opacity": ["get", "coreOpacity"],
+          "circle-stroke-color": "#1c1917",
+          "circle-stroke-opacity": ["get", "coreOpacity"],
           "circle-stroke-width": 2
         }
       });
@@ -581,8 +687,52 @@ function MapPanel({
 
     setSourceData(map, "zones", zoneFeatures);
     setSourceData(map, "stations", stationFeatures);
-    setSourceData(map, "events", eventFeatures);
-  }, [eventFeatures, mapReady, stationFeatures, zoneFeatures]);
+  }, [mapReady, stationFeatures, zoneFeatures]);
+
+  useEffect(() => {
+    if (!hydratedEventsRef.current) {
+      for (const event of events) {
+        seenEventIdsRef.current.add(event.eventId);
+      }
+      hydratedEventsRef.current = true;
+      return;
+    }
+
+    const nowMs = performance.now();
+    for (const event of events.slice(0, 20)) {
+      if (seenEventIdsRef.current.has(event.eventId)) {
+        continue;
+      }
+
+      seenEventIdsRef.current.add(event.eventId);
+      flashesRef.current.set(event.eventId, {
+        event,
+        receivedAtMs: nowMs
+      });
+    }
+  }, [events]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady) {
+      return;
+    }
+
+    const renderFlashes = () => {
+      const nowMs = performance.now();
+      for (const [eventId, flash] of flashesRef.current) {
+        if (nowMs - flash.receivedAtMs > DETECTION_FLASH_TTL_MS) {
+          flashesRef.current.delete(eventId);
+        }
+      }
+
+      setSourceData(map, "events", buildEventFeatures([...flashesRef.current.values()], stationById, nowMs));
+    };
+
+    renderFlashes();
+    const interval = window.setInterval(renderFlashes, DETECTION_FLASH_INTERVAL_MS);
+    return () => window.clearInterval(interval);
+  }, [mapReady, stationById]);
 
   return (
     <section className="map-panel" aria-label="Collserola operational map">
@@ -598,6 +748,10 @@ function MapPanel({
 }
 
 export function App() {
+  if (shouldRenderPublicStatusPage()) {
+    return <PublicStatusPage />;
+  }
+
   const [stations, setStations] = useState<Station[]>([]);
   const [zones, setZones] = useState<Zone[]>([]);
   const [events, setEvents] = useState<DetectionEvent[]>([]);
@@ -615,6 +769,9 @@ export function App() {
   const [expandedStationId, setExpandedStationId] = useState<string | null>(null);
   const [dismissedAlertEventIds, setDismissedAlertEventIds] = useState<Set<string>>(() => new Set());
   const stationListRef = useRef<HTMLDivElement | null>(null);
+  const [listenFromDevice, setListenFromDevice] = useState(true);
+  const listenFromDeviceRef = useRef(true);
+  const ignoredDeviceEventIdsRef = useRef<Set<string>>(new Set());
 
   const stationById = useMemo(() => new Map(stations.map((station) => [station.id, station])), [stations]);
   const latestTelemetryByStation = useMemo(() => {
@@ -634,10 +791,37 @@ export function App() {
   const latestCall = latestCallForEvent(calls, activeAlertEvent?.eventId);
   const activeStationCount = stations.filter((station) => station.status === "online").length;
   const telemetryStationCount = latestTelemetryByStation.size;
+  const sortedStations = useMemo(() => {
+    return [...stations].sort((a, b) => {
+      const aRank = isDeviceStation(a) ? 0 : latestTelemetryByStation.has(a.id) ? 1 : 2;
+      const bRank = isDeviceStation(b) ? 0 : latestTelemetryByStation.has(b.id) ? 1 : 2;
+
+      if (aRank !== bRank) {
+        return aRank - bRank;
+      }
+
+      if (aRank === 1) {
+        const aObservedAt = latestTelemetryByStation.get(a.id)?.observedAt ?? "";
+        const bObservedAt = latestTelemetryByStation.get(b.id)?.observedAt ?? "";
+        return new Date(bObservedAt).getTime() - new Date(aObservedAt).getTime();
+      }
+
+      return a.name.localeCompare(b.name);
+    });
+  }, [latestTelemetryByStation, stations]);
   const alertTrackingItems = useMemo(
     () => buildAlertTrackingItems(activeAlertEvent, stationById, latestCall),
     [activeAlertEvent, latestCall, stationById]
   );
+
+  function setDeviceListening(nextValue: boolean, options?: { clearIgnoredEvents?: boolean }) {
+    listenFromDeviceRef.current = nextValue;
+    setListenFromDevice(nextValue);
+
+    if (options?.clearIgnoredEvents) {
+      ignoredDeviceEventIdsRef.current.clear();
+    }
+  }
 
   useEffect(() => {
     let isMounted = true;
@@ -693,6 +877,15 @@ export function App() {
       setConnectionState("offline");
     });
     socket.on(SOCKET_EVENTS.detectionCreated, (event: DetectionEvent) => {
+      if (event.source === "device") {
+        if (!listenFromDeviceRef.current) {
+          ignoredDeviceEventIdsRef.current.add(event.eventId);
+          return;
+        }
+
+        setDeviceListening(false);
+      }
+
       setEvents((currentEvents) => upsertEvent(currentEvents, event));
       setDismissedAlertEventIds((currentIds) => {
         if (!currentIds.has(event.eventId)) {
@@ -705,6 +898,10 @@ export function App() {
       });
     });
     socket.on(SOCKET_EVENTS.telemetryCreated, (reading: TelemetryReading) => {
+      if (reading.source === "device" && !listenFromDeviceRef.current) {
+        return;
+      }
+
       setTelemetryReadings((currentReadings) => upsertTelemetry(currentReadings, reading));
     });
     socket.on(SOCKET_EVENTS.eventsCleared, () => {
@@ -712,6 +909,10 @@ export function App() {
       setDismissedAlertEventIds(new Set());
     });
     socket.on(SOCKET_EVENTS.callUpdated, (call: CivilProtectionCall) => {
+      if (ignoredDeviceEventIdsRef.current.has(call.eventId)) {
+        return;
+      }
+
       setCalls((currentCalls) => upsertCall(currentCalls, call));
     });
     socket.on(SOCKET_EVENTS.callsCleared, () => {
@@ -755,7 +956,8 @@ export function App() {
 
   async function simulateDetection() {
     const targetStation =
-      stations.find((station) => station.id === "frontier-gate-01") ??
+      stations.find((station) => station.id === DEMO_DETECTION_STATION_ID) ??
+      stations.find((station) => station.name === "Control Station 02") ??
       stations.find((station) => station.type === "frontier") ??
       stations[0];
 
@@ -895,6 +1097,10 @@ export function App() {
       }
 
       setScenarioState(responseBody.scenario);
+
+      if (path === "/api/scenario/reset") {
+        setDeviceListening(true, { clearIgnoredEvents: true });
+      }
     } catch (scenarioError) {
       setError(scenarioError instanceof Error ? scenarioError.message : "Scenario command failed.");
     } finally {
@@ -962,7 +1168,7 @@ export function App() {
       <aside className="left-rail">
         <div className="brand-block">
           <div>
-            <p className="eyebrow">Edge AI monitoring</p>
+            <p className="eyebrow">Edge AI monitor</p>
             <h1 className="brand-name">
               gu<span className="brand-ai">A<span className="brand-i">I</span></span>ta
             </h1>
@@ -974,9 +1180,20 @@ export function App() {
         </div>
 
         <section className="panel-section">
-          <div className="section-heading">
-            <Clock3 size={16} />
-            <h2>Scenario</h2>
+          <div className="section-heading section-heading-action">
+            <div className="section-heading-label">
+              <Clock3 size={16} />
+              <h2>Scenario</h2>
+            </div>
+            <label className="device-listen-toggle" title="Accept incoming device detections">
+              <span>Listen from device</span>
+              <input
+                checked={listenFromDevice}
+                type="checkbox"
+                onChange={(event) => setDeviceListening(event.target.checked, { clearIgnoredEvents: event.target.checked })}
+              />
+              <i aria-hidden="true" />
+            </label>
           </div>
           <div className="scenario-state">
             <span>night-to-day patrol</span>
@@ -1059,23 +1276,112 @@ export function App() {
             <Activity size={16} />
             <h2>Network</h2>
           </div>
-          <div className="metric-grid">
-            <div className="metric-card">
+          <div className="network-strip">
+            <div className="network-stat">
               <span>Stations</span>
               <strong>{stations.length}</strong>
             </div>
-            <div className="metric-card">
+            <div className="network-stat">
               <span>Online</span>
               <strong>{activeStationCount}</strong>
             </div>
-            <div className="metric-card">
+            <div className="network-stat">
               <span>Zones</span>
               <strong>{zones.length}</strong>
             </div>
-            <div className="metric-card">
+            <div className="network-stat">
               <span>Telemetry</span>
               <strong>{telemetryStationCount}</strong>
             </div>
+          </div>
+        </section>
+
+        <section className="panel-section station-panel">
+          <div className="section-heading">
+            <MapPin size={16} />
+            <h2>Stations</h2>
+          </div>
+          <div className="station-list" ref={stationListRef}>
+            {sortedStations.map((station) => {
+              const telemetry = latestTelemetryByStation.get(station.id);
+              const batteryPct = telemetry?.batteryPct ?? station.batteryPct;
+              const stationIsDevice = isDeviceStation(station);
+              const stationIsRisk = isRiskControlStation(station);
+
+              return (
+                <article className="station-card" data-station-id={station.id} key={station.id}>
+                  <button
+                    className="station-row"
+                    type="button"
+                    aria-expanded={expandedStationId === station.id}
+                    onClick={() => setExpandedStationId((currentId) => (currentId === station.id ? null : station.id))}
+                  >
+                    <span
+                      className={`station-dot ${station.status} ${stationIsRisk ? "risk" : ""} ${
+                        stationIsDevice ? "device" : ""
+                      }`}
+                    />
+                    <div>
+                      <strong>{station.name}</strong>
+                      <span>{stationIsDevice ? "device" : telemetry ? "telemetry" : stationIsRisk ? "risk" : station.type}</span>
+                    </div>
+                    <em>{formatBattery(batteryPct)}</em>
+                    <ChevronDown className="station-chevron" size={15} />
+                  </button>
+                  <div className={expandedStationId === station.id ? "station-details open" : "station-details"}>
+                    <dl>
+                      <div>
+                        <dt>Status</dt>
+                        <dd>{station.status}</dd>
+                      </div>
+                      <div>
+                        <dt>Station ID</dt>
+                        <dd>{station.id}</dd>
+                      </div>
+                      <div>
+                        <dt>Zone</dt>
+                        <dd>{station.zoneId ?? "unassigned"}</dd>
+                      </div>
+                      <div>
+                        <dt>Location</dt>
+                        <dd>{station.latitude.toFixed(4)}, {station.longitude.toFixed(4)}</dd>
+                      </div>
+                    </dl>
+                    {telemetry ? (
+                      <div className="telemetry-grid" aria-label={`Latest telemetry for ${station.name}`}>
+                        <div>
+                          <Thermometer size={14} />
+                          <span>{formatTemperature(telemetry.temperatureC)}</span>
+                        </div>
+                        <div>
+                          <Droplets size={14} />
+                          <span>{formatHumidity(telemetry.humidityPct)}</span>
+                        </div>
+                        <div>
+                          <Sun size={14} />
+                          <span>{formatLight(telemetry.lightLux)}</span>
+                        </div>
+                        <div>
+                          <Battery size={14} />
+                          <span>{formatBattery(telemetry.batteryPct)}</span>
+                        </div>
+                        <div>
+                          <Signal size={14} />
+                          <span>{formatSignal(telemetry.rssiDbm)}</span>
+                        </div>
+                        <div>
+                          <Clock3 size={14} />
+                          <span>{formatTime(telemetry.observedAt)}</span>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="station-telemetry-empty">No sensor reading yet</div>
+                    )}
+                    {station.description ? <p>{station.description}</p> : null}
+                  </div>
+                </article>
+              );
+            })}
           </div>
         </section>
 
@@ -1240,119 +1546,33 @@ export function App() {
           ) : null}
         </section>
 
-        <section className="panel-section station-panel">
-          <div className="section-heading">
-            <MapPin size={16} />
-            <h2>Stations</h2>
-          </div>
-          <div className="station-list" ref={stationListRef}>
-            {stations.map((station) => {
-              const telemetry = latestTelemetryByStation.get(station.id);
-              const batteryPct = telemetry?.batteryPct ?? station.batteryPct;
-
-              return (
-                <article className="station-card" data-station-id={station.id} key={station.id}>
-                  <button
-                    className="station-row"
-                    type="button"
-                    aria-expanded={expandedStationId === station.id}
-                    onClick={() => setExpandedStationId((currentId) => (currentId === station.id ? null : station.id))}
-                  >
-                    <span className={`station-dot ${station.status}`} />
-                    <div>
-                      <strong>{station.name}</strong>
-                      <span>{station.type}</span>
-                    </div>
-                    <em>{formatBattery(batteryPct)}</em>
-                    <ChevronDown className="station-chevron" size={15} />
-                  </button>
-                  <div className={expandedStationId === station.id ? "station-details open" : "station-details"}>
-                    <dl>
-                      <div>
-                        <dt>Status</dt>
-                        <dd>{station.status}</dd>
-                      </div>
-                      <div>
-                        <dt>Station ID</dt>
-                        <dd>{station.id}</dd>
-                      </div>
-                      <div>
-                        <dt>Zone</dt>
-                        <dd>{station.zoneId ?? "unassigned"}</dd>
-                      </div>
-                      <div>
-                        <dt>Location</dt>
-                        <dd>{station.latitude.toFixed(4)}, {station.longitude.toFixed(4)}</dd>
-                      </div>
-                    </dl>
-                    {telemetry ? (
-                      <div className="telemetry-grid" aria-label={`Latest telemetry for ${station.name}`}>
-                        <div>
-                          <Thermometer size={14} />
-                          <span>{formatTemperature(telemetry.temperatureC)}</span>
-                        </div>
-                        <div>
-                          <Droplets size={14} />
-                          <span>{formatHumidity(telemetry.humidityPct)}</span>
-                        </div>
-                        <div>
-                          <Sun size={14} />
-                          <span>{formatLight(telemetry.lightLux)}</span>
-                        </div>
-                        <div>
-                          <Battery size={14} />
-                          <span>{formatBattery(telemetry.batteryPct)}</span>
-                        </div>
-                        <div>
-                          <Signal size={14} />
-                          <span>{formatSignal(telemetry.rssiDbm)}</span>
-                        </div>
-                        <div>
-                          <Clock3 size={14} />
-                          <span>{formatTime(telemetry.observedAt)}</span>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="station-telemetry-empty">No sensor reading yet</div>
-                    )}
-                    {station.description ? <p>{station.description}</p> : null}
-                  </div>
-                </article>
-              );
-            })}
-          </div>
-        </section>
       </aside>
 
       <section className="timeline-panel">
         <div className="timeline-heading">
           <div>
-            <h2>Event Timeline</h2>
+            <h2>Detection Feed</h2>
             <span>{events.length ? `${events.length} stored` : "waiting"}</span>
           </div>
           <button
-            className="quiet-button"
+            className="quiet-button compact-button"
             type="button"
             onClick={clearEvents}
             disabled={events.length === 0 || isClearingEvents}
             title="Clear stored demo events"
           >
-            <Trash2 size={14} />
-            {isClearingEvents ? "Clearing" : "Clear events"}
+            <Trash2 size={13} />
+            {isClearingEvents ? "Clearing" : "Clear"}
           </button>
         </div>
         <div className="timeline-track">
-          {events.slice(0, 8).map((event) => (
-            <article className="timeline-item" key={event.eventId}>
-              <div className="timeline-item-head">
-                <span className={`source-badge ${event.source}`}>{event.source}</span>
-                <strong>{percent(event.confidence)}</strong>
-              </div>
-              <h3>{stationLabel(event.stationId, stationById)}</h3>
-              <div className="timeline-meta">
-                <span>{formatTime(event.observedAt)}</span>
-                <span>{event.direction ?? "unknown"}</span>
-              </div>
+          {events.slice(0, 12).map((event) => (
+            <article className={`timeline-item ${event.source}`} key={event.eventId}>
+              <span className="timeline-dot" />
+              <span>{formatTime(event.observedAt)}</span>
+              <strong>{stationLabel(event.stationId, stationById)}</strong>
+              <em>{event.source}</em>
+              <b>{percent(event.confidence)}</b>
             </article>
           ))}
           {events.length === 0 ? <div className="empty-state timeline-empty">No events stored</div> : null}

@@ -32,7 +32,7 @@ The device sender should read the server URL from config:
 {
   "serverUrl": "https://uncordial-mathias-infirmly.ngrok-free.dev",
   "deviceToken": "demo-device-token",
-  "stationId": "live-device-01"
+  "stationId": "collserola-control-02"
 }
 ```
 

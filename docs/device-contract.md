@@ -29,7 +29,7 @@ The server URL should come from config or environment variables, not from hardco
 {
   "serverUrl": "https://uncordial-mathias-infirmly.ngrok-free.dev",
   "deviceToken": "demo-device-token",
-  "stationId": "live-device-01"
+  "stationId": "collserola-control-02"
 }
 ```
 
@@ -78,7 +78,7 @@ Minimum telemetry payload:
 
 ```json
 {
-  "stationId": "live-device-01",
+  "stationId": "collserola-control-02",
   "source": "device",
   "temperatureC": 17.4
 }
@@ -89,7 +89,7 @@ Full telemetry payload:
 ```json
 {
   "telemetryId": "tel_live_device_001",
-  "stationId": "live-device-01",
+  "stationId": "collserola-control-02",
   "observedAt": "2026-04-25T10:42:00.000Z",
   "source": "device",
   "temperatureC": 17.4,
@@ -111,7 +111,7 @@ Expected telemetry response:
   "telemetryId": "tel_live_device_001",
   "telemetry": {
     "telemetryId": "tel_live_device_001",
-    "stationId": "live-device-01",
+    "stationId": "collserola-control-02",
     "observedAt": "2026-04-25T10:42:00.000Z",
     "source": "device",
     "temperatureC": 17.4,
@@ -139,7 +139,7 @@ This is enough for the hardware team to start sending real detections:
 
 ```json
 {
-  "stationId": "live-device-01",
+  "stationId": "collserola-control-02",
   "source": "device",
   "species": "wild_boar",
   "confidence": 0.91
@@ -153,7 +153,7 @@ If `eventId` or `observedAt` are missing, the server may generate them.
 ```json
 {
   "eventId": "evt_live_device_001",
-  "stationId": "live-device-01",
+  "stationId": "collserola-control-02",
   "observedAt": "2026-04-25T10:42:12.000Z",
   "source": "device",
   "species": "wild_boar",
@@ -204,7 +204,7 @@ direction: towards_city | towards_forest | left_to_right | right_to_left | unkno
 Use this first for the physical Arduino UNO Q demo device:
 
 ```text
-live-device-01
+collserola-control-02
 ```
 
 Other seeded stations currently available for simulation/demo work:
@@ -223,7 +223,7 @@ curl -X POST https://uncordial-mathias-infirmly.ngrok-free.dev/api/device/events
   -H "Authorization: Bearer ${DEVICE_TOKEN}" \
   -H "Content-Type: application/json" \
   -d '{
-    "stationId": "live-device-01",
+    "stationId": "collserola-control-02",
     "source": "device",
     "species": "wild_boar",
     "confidence": 0.91,
@@ -242,7 +242,7 @@ curl -X POST https://uncordial-mathias-infirmly.ngrok-free.dev/api/device/events
   "severity": "high",
   "event": {
     "eventId": "evt_live_device_001",
-    "stationId": "live-device-01",
+    "stationId": "collserola-control-02",
     "observedAt": "2026-04-25T10:42:12.000Z",
     "source": "device",
     "species": "wild_boar",
@@ -312,7 +312,7 @@ import requests
 
 SERVER_URL = "https://uncordial-mathias-infirmly.ngrok-free.dev"
 DEVICE_TOKEN = "demo-device-token"
-STATION_ID = "live-device-01"
+STATION_ID = "collserola-control-02"
 
 def send_detection(confidence: float):
     payload = {

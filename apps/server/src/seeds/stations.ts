@@ -10,15 +10,15 @@ const namedStations: Record<number, Pick<Station, "id" | "name" | "description">
     name: "Control Station 01",
     description: "Western containment control station"
   },
+  2: {
+    id: "collserola-control-02",
+    name: "Control Station 02",
+    description: "Physical Arduino UNO Q demo control station"
+  },
   18: {
     id: "forest-control-01",
     name: "Control Station 18",
     description: "Interior forest control station"
-  },
-  42: {
-    id: "live-device-01",
-    name: "Control Station 42 / UNO Q",
-    description: "Physical Arduino UNO Q demo control station"
   },
   49: {
     id: "frontier-gate-01",
@@ -45,7 +45,7 @@ export const seedStations: Station[] = StationSchema.array().parse(
       latitude,
       longitude,
       zoneId: containmentZoneId,
-      batteryPct: stationNumber === 42 ? 100 : Math.max(61, 98 - (stationNumber % 14) * 3),
+      batteryPct: stationNumber === 2 ? 100 : Math.max(61, 98 - (stationNumber % 14) * 3),
       lastSeenAt: seededAt,
       description: namedStation?.description ?? "Operator-provided control station from the demo GeoJSON map"
     };

@@ -128,7 +128,7 @@ The Arduino sender should use:
 {
   "serverUrl": "https://uncordial-mathias-infirmly.ngrok-free.dev",
   "deviceToken": "same value as DEVICE_TOKEN in .env",
-  "stationId": "live-device-01"
+  "stationId": "collserola-control-02"
 }
 ```
 
@@ -146,7 +146,7 @@ curl -X POST http://localhost:3000/api/device/events \
   -H "Content-Type: application/json" \
   -d '{
     "eventId": "evt_local_test",
-    "stationId": "live-device-01",
+    "stationId": "collserola-control-02",
     "observedAt": "2026-04-25T10:42:12.000Z",
     "source": "device",
     "species": "wild_boar",
