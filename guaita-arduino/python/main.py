@@ -2,9 +2,11 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 from datetime import datetime, UTC
+import base64
 import requests
 import time
 from arduino.app_utils import *
+from arduino.app_utils.image import draw_bounding_boxes, get_image_bytes
 from arduino.app_bricks.web_ui import WebUI
 from arduino.app_bricks.video_objectdetection import VideoObjectDetection
 
@@ -44,7 +46,20 @@ def _safe_float(value):
     except Exception:
         return None
 
-def post_detection(confidence: float, bounding_box_xyxy=None):
+def post_detection(confidence: float, frame: bytes = None, detections: dict = None):
+    snapshot = None
+    if frame is not None and detections is not None:
+        try:
+            annotated = draw_bounding_boxes(frame, detections)
+            image_bytes = get_image_bytes(annotated)
+            snapshot = {
+                "contentType": "image/jpeg",
+                "encoding": "base64",
+                "data": base64.b64encode(image_bytes).decode("utf-8"),
+            }
+        except Exception as e:
+            print(f"[detection] snapshot encoding failed: {e}")
+
     try:
         r = requests.post(
             f"{SERVER_URL}/api/device/events",
@@ -53,16 +68,16 @@ def post_detection(confidence: float, bounding_box_xyxy=None):
                 "source": "device",
                 "species": "wild_boar",
                 "confidence": confidence,
-                "bounding_box_xyxy": bounding_box_xyxy,
                 "observedAt": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
                 "temperatureC": _safe_float(latest_metrics["temperatureC"]),
                 "humidityPct": _safe_float(latest_metrics["humidityPct"]),
                 "lightLux": _safe_float(latest_metrics["lightLux"]),
                 "distanceMm": _safe_float(latest_metrics["distanceMm"]),
                 "model": {"name": "wild-boar-detector", "version": "demo-v1"},
+                "snapshot": snapshot,
             },
             headers=HEADERS,
-            timeout=5,
+            timeout=10,
         )
         print(f"[detection] status={r.status_code} body={r.text}")
     except Exception as e:
@@ -97,13 +112,11 @@ def _bridge_get(key, call_name):
 def loop():
     global led_state, camera_is_working, last_metrics_post, active
 
-    # Check button toggle state
     try:
         active = bool(Bridge.call("get_active_state"))
     except Exception:
         pass
 
-    # LED blinks only when active
     if active:
         led_state = not led_state
         try:
@@ -111,13 +124,11 @@ def loop():
         except Exception:
             pass
     else:
-        # LED off in standby
         try:
             Bridge.call("set_led_state", False)
         except Exception:
             pass
 
-    # Always read sensors so values are fresh when activated
     _bridge_get("temperatureC", "get_temperature")
     _bridge_get("humidityPct", "get_humidity")
     _bridge_get("lightLux", "get_light")
@@ -125,7 +136,6 @@ def loop():
 
     print(f"[state] active={active} metrics={latest_metrics}")
 
-    # Only post telemetry when active
     now = time.time()
     if active and now - last_metrics_post >= METRICS_INTERVAL:
         post_telemetry()
@@ -133,7 +143,7 @@ def loop():
 
     time.sleep(0.1 if camera_is_working else 1.0)
 
-def on_all_detections(detections: dict):
+def on_all_detections(detections: dict, frame: bytes):  # frame available via camera_preview=True
     global camera_is_working
     camera_is_working = True
 
@@ -145,19 +155,17 @@ def on_all_detections(detections: dict):
                 "timestamp": datetime.now(UTC).isoformat(),
             })
 
-        if key == "0" and active:  # only fire when active
+        if key == "0" and active:
             best_confidence = values[0].get("confidence")
-            bounding_box_xyxy = values[0].get("bounding_box_xyxy")
             ui.send_message("boar_detected", {
                 "confidence": best_confidence,
                 "timestamp": datetime.now(UTC).isoformat(),
-                "bounding_box_xyxy": bounding_box_xyxy,
                 **latest_metrics,
             })
-            post_detection(best_confidence, bounding_box_xyxy)
+            post_detection(best_confidence, frame, detections)
 
 ui = WebUI()
-detector = VideoObjectDetection(confidence=0.5, debounce_sec=1.5)
+detector = VideoObjectDetection(confidence=0.5, debounce_sec=1.5, camera_preview=True)
 detector.on_detect_all(on_all_detections)
 ui.on_message("override_th", lambda sid, threshold: detector.override_threshold(threshold))
 
