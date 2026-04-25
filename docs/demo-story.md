@@ -6,12 +6,22 @@ guAIta is an Edge AI monitoring system for Collserola that detects wild boars lo
 
 The value is not only detection. The value is targeted response: knowing where to send people, when to escalate, and how to reduce unnecessary manual surveillance.
 
+## Business Impact Hook
+
+The clearest impact claim is public-resource efficiency: guAIta moves the response model from static entrance coverage to event-triggered dispatch.
+
+Use the sourced cost proxy in [business-impact.md](business-impact.md): Barcelona's 2025 Guardia Urbana tariff lists a patrol car with two officers at EUR 109.23/hour. One forest entrance covered 24/7 for a 30-day month is therefore about EUR 78.6k of patrol capacity. At 20 entrances, static coverage reaches about EUR 1.57M/month.
+
+Demo-safe close:
+
+> We are not claiming to stop wild boars. We are helping public teams spend less time waiting at every entrance and more time acting where detections show real risk.
+
 ## Three-Minute Flow
 
 1. Introduce the problem.
    - Collserola is hard to monitor manually.
    - Wild boar movement and disease containment can create safety, access, and public resource issues.
-   - Edge AI enables low-cost distributed monitoring.
+   - Static entrance surveillance is expensive; Edge AI enables lower-cost distributed monitoring and targeted dispatch.
 
 2. Show the architecture.
    - The Arduino UNO Q runs local vision inference.
@@ -26,16 +36,18 @@ The value is not only detection. The value is targeted response: knowing where t
 4. Show a real edge event.
    - Put a boar image/video in front of the live camera.
    - The device detects the boar locally.
-   - A live device event appears on the map.
+   - A live device event appears on the map and pauses the scenario clock so the incident can be explained.
 
 5. Escalate operationally.
    - The system identifies risk near a high-transit or no-go frontier zone.
    - It raises alert severity.
    - It recommends an action, such as dispatching civil protection or a wildlife response team.
+   - Click **Call Civil Protection**. The ElevenLabs agent calls the demo recipient, explains why the pattern is unusual, answers location and baseline questions, and marks the alert acknowledged when the recipient confirms a response.
 
 6. Close with scalability.
    - One device is a proof of concept.
    - The same architecture scales to many low-cost stations.
+   - The measurable value is avoided static patrol hours and faster response to the entrances that actually show activity.
    - Future versions can use environmental telemetry and AI explanations.
 
 ## MVP Story Candidate
@@ -52,6 +64,7 @@ Boar movement increases near a Collserola boundary early in the morning, close t
 - Event graph showing rising activity.
 - Active alert panel.
 - Recommended action panel with evidence.
+- Civil Protection call status and acknowledgement.
 - Scenario controls: start, pause, advance, reset.
 - Live device event label when Arduino sends real data.
 

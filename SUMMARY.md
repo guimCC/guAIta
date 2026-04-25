@@ -15,11 +15,8 @@ The project should use the provided Qualcomm/Arduino edge device with camera and
 - Collserola closures and access controls create public cost, inconvenience, and safety concerns.
 - Fencing or manually guarding a forest is expensive and hard to scale.
 - Better real-time detection would help allocate public resources only where they are needed.
-- Contextual facts to research and verify:
-  - Current Collserola wild boar outbreak data.
-  - Closure/access-control history.
-  - Economic importance of the pig sector in Catalonia.
-  - Public costs of containment, fencing, policing, or civil protection operations.
+- Current sourced business-impact research lives in [docs/business-impact.md](docs/business-impact.md), with raw notes in [docs/research/ppa-business-impact-raw.md](docs/research/ppa-business-impact-raw.md).
+- The key quantified hook is static patrol substitution: a Barcelona Guardia Urbana patrol car with two officers is listed at EUR 109.23/hour for special services, so one 24/7 entrance is about EUR 78.6k/month of patrol capacity.
 
 ## Value Proposition
 

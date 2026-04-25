@@ -4,6 +4,7 @@ export const DetectionSourceSchema = z.enum(["device", "scenario", "manual"]);
 export const SeveritySchema = z.enum(["low", "medium", "high", "critical"]);
 export const AlertStatusSchema = z.enum(["active", "acknowledged", "resolved"]);
 export const ActionStatusSchema = z.enum(["pending", "dispatched", "completed", "cancelled"]);
+export const CallStatusSchema = z.enum(["requested", "calling", "acknowledged", "completed", "failed"]);
 export const ScenarioStatusSchema = z.enum(["idle", "running", "paused", "completed"]);
 export const StationStatusSchema = z.enum(["online", "degraded", "offline"]);
 export const StationTypeSchema = z.enum(["control", "frontier", "containment", "urban"]);
@@ -99,6 +100,42 @@ export const RecommendedActionSchema = z.object({
   priority: z.number().int().min(1).max(5),
   evidence: z.array(z.string().min(1)).default([]),
   createdAt: z.string().datetime()
+});
+
+export const CivilProtectionCallSchema = z.object({
+  id: z.string().min(1),
+  eventId: z.string().min(1),
+  status: CallStatusSchema,
+  provider: z.enum(["elevenlabs", "demo"]),
+  toNumber: z.string().min(1).optional(),
+  agentId: z.string().min(1).optional(),
+  agentPhoneNumberId: z.string().min(1).optional(),
+  conversationId: z.string().min(1).nullable().optional(),
+  callSid: z.string().min(1).nullable().optional(),
+  incidentSummary: z.string().min(1),
+  acknowledgement: z.string().min(1).optional(),
+  transcriptSummary: z.string().min(1).optional(),
+  transcript: z.unknown().optional(),
+  error: z.string().min(1).optional(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+  acknowledgedAt: z.string().datetime().optional(),
+  completedAt: z.string().datetime().optional()
+});
+
+export const StartCivilProtectionCallInputSchema = z.object({
+  eventId: z.string().min(1),
+  toNumber: z.string().min(1).optional()
+});
+
+export const AcknowledgeCivilProtectionCallInputSchema = z.object({
+  callId: z.string().min(1).optional(),
+  eventId: z.string().min(1).optional(),
+  incidentId: z.string().min(1).optional(),
+  outcome: z.string().min(1).optional(),
+  notes: z.string().min(1).optional()
+}).refine((value) => Boolean(value.callId ?? value.eventId ?? value.incidentId), {
+  message: "callId, eventId, or incidentId is required"
 });
 
 export const ScenarioStateSchema = z.object({

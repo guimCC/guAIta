@@ -1,66 +1,53 @@
 import { StationSchema, type Station } from "@guaita/shared";
+import { collserolaControlPoints } from "./collserola-map.js";
 
 const seededAt = "2026-04-25T08:30:00.000Z";
+const containmentZoneId = "collserola-containment-area";
 
-export const seedStations: Station[] = StationSchema.array().parse([
-  {
-    id: "forest-control-01",
-    name: "Vallvidrera Ridge",
-    type: "control",
-    status: "online",
-    latitude: 41.4217,
-    longitude: 2.0912,
-    zoneId: "central-forest",
-    batteryPct: 96,
-    lastSeenAt: seededAt,
-    description: "Interior forest control point"
-  },
-  {
-    id: "frontier-gate-01",
-    name: "Carretera de les Aigues Access",
-    type: "frontier",
-    status: "online",
-    latitude: 41.4149,
-    longitude: 2.1216,
-    zoneId: "urban-frontier-east",
-    batteryPct: 88,
-    lastSeenAt: seededAt,
-    description: "High-transit access point near the city edge"
-  },
-  {
+const namedStations: Record<number, Pick<Station, "id" | "name" | "description">> = {
+  1: {
     id: "containment-west-01",
-    name: "Sant Cugat Frontier",
-    type: "containment",
-    status: "online",
-    latitude: 41.4392,
-    longitude: 2.077,
-    zoneId: "containment-west",
-    batteryPct: 91,
-    lastSeenAt: seededAt,
-    description: "Containment-facing western station"
+    name: "Control Station 01",
+    description: "Western containment control station"
   },
-  {
-    id: "urban-edge-01",
-    name: "Horta Access",
-    type: "urban",
-    status: "degraded",
-    latitude: 41.438,
-    longitude: 2.145,
-    zoneId: "urban-frontier-east",
-    batteryPct: 63,
-    lastSeenAt: seededAt,
-    description: "Urban-adjacent station with reduced battery"
+  18: {
+    id: "forest-control-01",
+    name: "Control Station 18",
+    description: "Interior forest control station"
   },
-  {
+  42: {
     id: "live-device-01",
-    name: "UNO Q Demo Station",
-    type: "frontier",
-    status: "online",
-    latitude: 41.4251,
-    longitude: 2.1058,
-    zoneId: "urban-frontier-east",
-    batteryPct: 100,
-    lastSeenAt: seededAt,
-    description: "Physical Arduino UNO Q demo device"
+    name: "Control Station 42 / UNO Q",
+    description: "Physical Arduino UNO Q demo control station"
+  },
+  49: {
+    id: "frontier-gate-01",
+    name: "Control Station 49",
+    description: "Boundary access control station"
+  },
+  57: {
+    id: "urban-edge-01",
+    name: "Control Station 57",
+    description: "Urban edge control station"
   }
-]);
+};
+
+export const seedStations: Station[] = StationSchema.array().parse(
+  collserolaControlPoints.map(([longitude, latitude], index): Station => {
+    const stationNumber = index + 1;
+    const namedStation = namedStations[stationNumber];
+
+    return {
+      id: namedStation?.id ?? `collserola-control-${stationNumber.toString().padStart(2, "0")}`,
+      name: namedStation?.name ?? `Control Station ${stationNumber.toString().padStart(2, "0")}`,
+      type: "control",
+      status: stationNumber % 17 === 0 ? "degraded" : "online",
+      latitude,
+      longitude,
+      zoneId: containmentZoneId,
+      batteryPct: stationNumber === 42 ? 100 : Math.max(61, 98 - (stationNumber % 14) * 3),
+      lastSeenAt: seededAt,
+      description: namedStation?.description ?? "Operator-provided control station from the demo GeoJSON map"
+    };
+  })
+);

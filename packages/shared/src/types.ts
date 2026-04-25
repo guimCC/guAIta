@@ -3,6 +3,7 @@ import type {
   ActionStatusSchema,
   AlertSchema,
   AlertStatusSchema,
+  AcknowledgeCivilProtectionCallInputSchema,
   DetectionEventInputSchema,
   DetectionEventSchema,
   DetectionSourceSchema,
@@ -11,6 +12,9 @@ import type {
   ScenarioStateSchema,
   ScenarioStatusSchema,
   SeveritySchema,
+  CallStatusSchema,
+  CivilProtectionCallSchema,
+  StartCivilProtectionCallInputSchema,
   StationSchema,
   StationStatusSchema,
   StationTypeSchema,
@@ -22,6 +26,7 @@ export type DetectionSource = z.infer<typeof DetectionSourceSchema>;
 export type Severity = z.infer<typeof SeveritySchema>;
 export type AlertStatus = z.infer<typeof AlertStatusSchema>;
 export type ActionStatus = z.infer<typeof ActionStatusSchema>;
+export type CallStatus = z.infer<typeof CallStatusSchema>;
 export type ScenarioStatus = z.infer<typeof ScenarioStatusSchema>;
 export type StationStatus = z.infer<typeof StationStatusSchema>;
 export type StationType = z.infer<typeof StationTypeSchema>;
@@ -34,4 +39,7 @@ export type Station = z.infer<typeof StationSchema>;
 export type Zone = z.infer<typeof ZoneSchema>;
 export type Alert = z.infer<typeof AlertSchema>;
 export type RecommendedAction = z.infer<typeof RecommendedActionSchema>;
+export type CivilProtectionCall = z.infer<typeof CivilProtectionCallSchema>;
+export type StartCivilProtectionCallInput = z.infer<typeof StartCivilProtectionCallInputSchema>;
+export type AcknowledgeCivilProtectionCallInput = z.infer<typeof AcknowledgeCivilProtectionCallInputSchema>;
 export type ScenarioState = z.infer<typeof ScenarioStateSchema>;

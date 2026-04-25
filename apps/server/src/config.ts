@@ -37,7 +37,12 @@ if (existsSync(envExamplePath)) {
 
 const placeholderValues = new Set([
   "replace_with_shared_device_token",
-  "replace_with_maptiler_key"
+  "replace_with_maptiler_key",
+  "replace_with_elevenlabs_api_key",
+  "replace_with_elevenlabs_agent_id",
+  "replace_with_elevenlabs_phone_number_id",
+  "replace_with_demo_recipient_number",
+  "replace_with_webhook_token"
 ]);
 
 function cleanEnv(name: string): string | undefined {
@@ -54,6 +59,16 @@ function numberEnv(name: string, fallback: number): number {
   const rawValue = cleanEnv(name);
   const value = rawValue ? Number(rawValue) : Number.NaN;
   return Number.isFinite(value) ? value : fallback;
+}
+
+function booleanEnv(name: string, fallback: boolean): boolean {
+  const rawValue = cleanEnv(name);
+
+  if (!rawValue) {
+    return fallback;
+  }
+
+  return ["1", "true", "yes", "on"].includes(rawValue.toLowerCase());
 }
 
 function resolveFromRepo(pathValue: string): string {
@@ -114,8 +129,15 @@ export const config = {
   nodeEnv: cleanEnv("NODE_ENV") ?? "development",
   host: cleanEnv("HOST") ?? "0.0.0.0",
   port: numberEnv("PORT", 3000),
+  publicBaseUrl: cleanEnv("PUBLIC_TUNNEL_URL") ?? cleanEnv("PUBLIC_BASE_URL") ?? "http://localhost:3000",
   databasePath: resolveFromRepo(cleanEnv("DATABASE_PATH") ?? "./data/guaita.db"),
   deviceToken: cleanEnv("DEVICE_TOKEN") ?? "demo-device-token",
+  callsEnabled: booleanEnv("CALLS_ENABLED", false),
+  civilProtectionDemoNumber: cleanEnv("CIVIL_PROTECTION_DEMO_NUMBER"),
+  elevenLabsApiKey: cleanEnv("ELEVENLABS_API_KEY"),
+  elevenLabsAgentId: cleanEnv("ELEVENLABS_AGENT_ID"),
+  elevenLabsPhoneNumberId: cleanEnv("ELEVENLABS_AGENT_PHONE_NUMBER_ID"),
+  elevenLabsWebhookToken: cleanEnv("ELEVENLABS_WEBHOOK_TOKEN"),
   corsOrigins: corsOrigins(),
   corsOrigin
 };

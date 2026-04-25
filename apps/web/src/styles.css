@@ -185,6 +185,24 @@ h3 {
   color: #d6d3d1;
 }
 
+.section-heading-action {
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.section-heading-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.section-heading-label h2 {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .scenario-state {
   display: grid;
   gap: 6px;
@@ -221,6 +239,19 @@ dt {
   height: 100%;
   border-radius: inherit;
   background: #22c55e;
+}
+
+.scenario-scale {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: -2px;
+}
+
+.scenario-scale span {
+  color: #a8a29e;
+  font-size: 0.68rem;
+  font-weight: 800;
 }
 
 .scenario-meta {
@@ -271,7 +302,7 @@ dt {
 
 .speed-control {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   overflow: hidden;
   border: 1px solid rgba(120, 113, 108, 0.32);
   border-radius: 8px;
@@ -281,15 +312,21 @@ dt {
   min-height: 30px;
   border: 0;
   border-right: 1px solid rgba(120, 113, 108, 0.24);
+  border-bottom: 1px solid rgba(120, 113, 108, 0.24);
   background: rgba(41, 37, 36, 0.5);
   color: #a8a29e;
-  font-size: 0.72rem;
+  font-size: 0.7rem;
   font-weight: 850;
   cursor: pointer;
 }
 
+.speed-control button:nth-child(4n),
 .speed-control button:last-child {
   border-right: 0;
+}
+
+.speed-control button:nth-last-child(-n + 4) {
+  border-bottom: 0;
 }
 
 .speed-control button.selected {
@@ -346,6 +383,13 @@ dt {
 .quiet-button:disabled {
   cursor: not-allowed;
   opacity: 0.46;
+}
+
+.compact-button {
+  flex: 0 0 auto;
+  min-height: 28px;
+  padding: 0 8px;
+  font-size: 0.7rem;
 }
 
 .metric-grid {
@@ -554,6 +598,73 @@ dd {
   color: #a8a29e;
   font-size: 0.72rem;
   font-style: normal;
+}
+
+.alert-empty {
+  min-height: 82px;
+}
+
+.escalation-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 38px;
+  border: 1px solid rgba(34, 197, 94, 0.55);
+  border-radius: 8px;
+  padding: 0 12px;
+  color: #052e16;
+  background: #22c55e;
+  font-size: 0.82rem;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.escalation-button:disabled {
+  cursor: not-allowed;
+  border-color: rgba(120, 113, 108, 0.24);
+  color: #78716c;
+  background: rgba(68, 64, 60, 0.34);
+}
+
+.call-receipt {
+  display: grid;
+  gap: 5px;
+  border: 1px solid rgba(120, 113, 108, 0.26);
+  border-radius: 8px;
+  padding: 9px 10px;
+  background: rgba(41, 37, 36, 0.6);
+}
+
+.call-receipt span {
+  color: #a8a29e;
+  font-size: 0.68rem;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.call-receipt strong {
+  color: #fde68a;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+}
+
+.call-receipt.acknowledged strong {
+  color: #bbf7d0;
+}
+
+.call-receipt.failed strong {
+  color: #fecaca;
+}
+
+.call-receipt p {
+  display: -webkit-box;
+  overflow: hidden;
+  color: #d6d3d1;
+  font-size: 0.74rem;
+  line-height: 1.35;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
 }
 
 .station-panel {

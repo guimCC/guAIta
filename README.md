@@ -15,5 +15,7 @@ Edge AI monitoring proof of concept for Collserola wild boar detection and opera
 - [docs/device-image-snapshot-contract.md](docs/device-image-snapshot-contract.md): planned v2 snapshot upload contract.
 - [docs/local-tunnel.md](docs/local-tunnel.md): ngrok/local tunnel guidance.
 - [docs/demo-story.md](docs/demo-story.md): 3-minute demo narrative.
+- [docs/business-impact.md](docs/business-impact.md): sourced PPA business-impact numbers and patrol cost model.
+- [docs/research/ppa-business-impact-raw.md](docs/research/ppa-business-impact-raw.md): raw research notes, assumptions, calculations, and links.
 - [docs/scenario-authoring.md](docs/scenario-authoring.md): scripted scenario model.
 - [docs/upgrade-path.md](docs/upgrade-path.md): v2 ideas intentionally deferred from the MVP.

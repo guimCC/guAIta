@@ -21,6 +21,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { io, type Socket } from "socket.io-client";
 import {
   SOCKET_EVENTS,
+  type CivilProtectionCall,
   type DetectionEvent,
   type ScenarioState,
   type Station,
@@ -43,6 +44,17 @@ interface EventsResponse {
   events: DetectionEvent[];
 }
 
+interface CallsResponse {
+  calls: CivilProtectionCall[];
+}
+
+interface CivilProtectionCallResponse {
+  ok: boolean;
+  call?: CivilProtectionCall;
+  error?: string;
+  message?: string;
+}
+
 interface ScenarioResponse {
   scenario: ScenarioState;
 }
@@ -55,6 +67,12 @@ interface CreateEventResponse {
 }
 
 interface ClearEventsResponse {
+  ok: boolean;
+  deletedCount: number;
+  error?: string;
+}
+
+interface ClearAlertsResponse {
   ok: boolean;
   deletedCount: number;
   error?: string;
@@ -86,7 +104,7 @@ const emptyPolygonCollection: FeatureCollection<Polygon> = {
   features: []
 };
 
-const scenarioSpeedOptions = [1, 10, 60, 120, 240] as const;
+const scenarioSpeedOptions = [1, 10, 60, 120, 240, 480, 720, 1440] as const;
 
 function apiUrl(path: string): string {
   return `${apiBaseUrl.replace(/\/$/, "")}${path}`;
@@ -106,6 +124,10 @@ function upsertEvent(events: DetectionEvent[], event: DetectionEvent): Detection
   return [event, ...events.filter((existing) => existing.eventId !== event.eventId)].slice(0, 100);
 }
 
+function upsertCall(calls: CivilProtectionCall[], call: CivilProtectionCall): CivilProtectionCall[] {
+  return [call, ...calls.filter((existing) => existing.id !== call.id)].slice(0, 50);
+}
+
 function formatTime(value: string): string {
   return new Intl.DateTimeFormat(undefined, {
     hour: "2-digit",
@@ -122,6 +144,41 @@ function stationLabel(stationId: string, stationById: Map<string, Station>): str
   return stationById.get(stationId)?.name ?? stationId;
 }
 
+function callStatusLabel(call: CivilProtectionCall | undefined): string {
+  if (!call) {
+    return "ready to call";
+  }
+
+  switch (call.status) {
+    case "requested":
+      return "request stored";
+    case "calling":
+      return "calling";
+    case "acknowledged":
+      return "acknowledged";
+    case "completed":
+      return "call completed";
+    case "failed":
+      return "call failed";
+  }
+}
+
+function callTone(call: CivilProtectionCall | undefined, isHighConfidence: boolean): AlertTrackingItem["tone"] {
+  if (call?.status === "acknowledged") {
+    return "standby";
+  }
+
+  if (call?.status === "calling" || call?.status === "completed") {
+    return "active";
+  }
+
+  return isHighConfidence ? "active" : "queued";
+}
+
+function latestCallForEvent(calls: CivilProtectionCall[], eventId: string | undefined): CivilProtectionCall | undefined {
+  return eventId ? calls.find((call) => call.eventId === eventId) : undefined;
+}
+
 function formatScenarioClock(scenarioState: ScenarioState | null): string {
   const value = scenarioState?.virtualNowIso ?? "2026-04-25T02:30:00.000Z";
 
@@ -129,6 +186,13 @@ function formatScenarioClock(scenarioState: ScenarioState | null): string {
     hour: "2-digit",
     minute: "2-digit"
   }).format(new Date(value));
+}
+
+function formatScenarioBoundary(value: string | undefined, fallback: string): string {
+  return new Intl.DateTimeFormat(undefined, {
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(new Date(value ?? fallback));
 }
 
 function scenarioProgress(scenarioState: ScenarioState | null): number {
@@ -141,27 +205,11 @@ function scenarioProgress(scenarioState: ScenarioState | null): number {
 
 function buildAlertTrackingItems(
   latestEvent: DetectionEvent | undefined,
-  stationById: Map<string, Station>
+  stationById: Map<string, Station>,
+  latestCall: CivilProtectionCall | undefined
 ): AlertTrackingItem[] {
   if (!latestEvent) {
-    return [
-      {
-        id: "civil-protection-standby",
-        title: "Civil protection",
-        target: "Barcelona coordination",
-        status: "standby",
-        detail: "No active detection to escalate",
-        tone: "standby"
-      },
-      {
-        id: "wildlife-response-standby",
-        title: "Wildlife response",
-        target: "Field unit",
-        status: "standby",
-        detail: "Waiting for event evidence",
-        tone: "standby"
-      }
-    ];
+    return [];
   }
 
   const stationName = stationLabel(latestEvent.stationId, stationById);
@@ -172,9 +220,9 @@ function buildAlertTrackingItems(
       id: `${latestEvent.eventId}-civil-protection`,
       title: "Civil protection",
       target: "Boundary access desk",
-      status: isHighConfidence ? "ready to call" : "monitoring",
-      detail: `${stationName}, ${percent(latestEvent.confidence)} confidence`,
-      tone: isHighConfidence ? "active" : "queued"
+      status: isHighConfidence ? callStatusLabel(latestCall) : "monitoring",
+      detail: latestCall?.acknowledgement ?? `${stationName}, ${percent(latestEvent.confidence)} confidence`,
+      tone: callTone(latestCall, isHighConfidence)
     },
     {
       id: `${latestEvent.eventId}-wildlife-response`,
@@ -269,7 +317,7 @@ function buildEventFeatures(events: DetectionEvent[], stationById: Map<string, S
   };
 }
 
-function setSourceData(map: MapLibreMap, sourceId: string, data: FeatureCollection<Point> | FeatureCollection<Polygon>): void {
+function setSourceData(map: MapLibreMap, sourceId: string, data: FeatureCollection): void {
   const source = map.getSource(sourceId) as GeoJSONSource | undefined;
   source?.setData(data);
 }
@@ -471,21 +519,27 @@ export function App() {
   const [stations, setStations] = useState<Station[]>([]);
   const [zones, setZones] = useState<Zone[]>([]);
   const [events, setEvents] = useState<DetectionEvent[]>([]);
+  const [calls, setCalls] = useState<CivilProtectionCall[]>([]);
   const [scenarioState, setScenarioState] = useState<ScenarioState | null>(null);
   const [connectionState, setConnectionState] = useState<ConnectionState>("connecting");
   const [error, setError] = useState<string | null>(null);
   const [isPosting, setIsPosting] = useState(false);
+  const [isCallingCivilProtection, setIsCallingCivilProtection] = useState(false);
   const [isClearingEvents, setIsClearingEvents] = useState(false);
+  const [isClearingAlerts, setIsClearingAlerts] = useState(false);
   const [isScenarioBusy, setIsScenarioBusy] = useState(false);
   const [expandedStationId, setExpandedStationId] = useState<string | null>(null);
+  const [dismissedAlertEventIds, setDismissedAlertEventIds] = useState<Set<string>>(() => new Set());
   const stationListRef = useRef<HTMLDivElement | null>(null);
 
   const stationById = useMemo(() => new Map(stations.map((station) => [station.id, station])), [stations]);
   const latestEvent = events[0];
+  const activeAlertEvent = latestEvent && !dismissedAlertEventIds.has(latestEvent.eventId) ? latestEvent : undefined;
+  const latestCall = latestCallForEvent(calls, activeAlertEvent?.eventId);
   const activeStationCount = stations.filter((station) => station.status === "online").length;
   const alertTrackingItems = useMemo(
-    () => buildAlertTrackingItems(latestEvent, stationById),
-    [latestEvent, stationById]
+    () => buildAlertTrackingItems(activeAlertEvent, stationById, latestCall),
+    [activeAlertEvent, latestCall, stationById]
   );
 
   useEffect(() => {
@@ -493,10 +547,11 @@ export function App() {
 
     async function loadInitialData() {
       try {
-        const [stationResponse, zoneResponse, eventResponse, scenarioResponse] = await Promise.all([
+        const [stationResponse, zoneResponse, eventResponse, callResponse, scenarioResponse] = await Promise.all([
           fetchJson<StationsResponse>("/api/stations"),
           fetchJson<ZonesResponse>("/api/zones"),
           fetchJson<EventsResponse>("/api/events?limit=50"),
+          fetchJson<CallsResponse>("/api/calls?limit=20"),
           fetchJson<ScenarioResponse>("/api/scenario/state")
         ]);
 
@@ -507,6 +562,7 @@ export function App() {
         setStations(stationResponse.stations);
         setZones(zoneResponse.zones);
         setEvents(eventResponse.events);
+        setCalls(callResponse.calls);
         setScenarioState(scenarioResponse.scenario);
         setError(null);
       } catch (loadError) {
@@ -539,9 +595,25 @@ export function App() {
     });
     socket.on(SOCKET_EVENTS.detectionCreated, (event: DetectionEvent) => {
       setEvents((currentEvents) => upsertEvent(currentEvents, event));
+      setDismissedAlertEventIds((currentIds) => {
+        if (!currentIds.has(event.eventId)) {
+          return currentIds;
+        }
+
+        const nextIds = new Set(currentIds);
+        nextIds.delete(event.eventId);
+        return nextIds;
+      });
     });
     socket.on(SOCKET_EVENTS.eventsCleared, () => {
       setEvents([]);
+      setDismissedAlertEventIds(new Set());
+    });
+    socket.on(SOCKET_EVENTS.callUpdated, (call: CivilProtectionCall) => {
+      setCalls((currentCalls) => upsertCall(currentCalls, call));
+    });
+    socket.on(SOCKET_EVENTS.callsCleared, () => {
+      setCalls([]);
     });
     socket.on(SOCKET_EVENTS.scenarioUpdated, (state: ScenarioState) => {
       setScenarioState(state);
@@ -617,6 +689,39 @@ export function App() {
     }
   }
 
+  async function callCivilProtection() {
+    if (!activeAlertEvent) {
+      setError("No active detection to escalate.");
+      return;
+    }
+
+    setIsCallingCivilProtection(true);
+    setError(null);
+
+    try {
+      const response = await fetch(apiUrl("/api/calls/civil-protection"), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          eventId: activeAlertEvent.eventId
+        })
+      });
+      const body = (await response.json()) as CivilProtectionCallResponse;
+
+      if (!response.ok || !body.ok || !body.call) {
+        throw new Error(body.message ?? body.error ?? `${response.status} ${response.statusText}`);
+      }
+
+      setCalls((currentCalls) => upsertCall(currentCalls, body.call as CivilProtectionCall));
+    } catch (callError) {
+      setError(callError instanceof Error ? callError.message : "Civil Protection call failed.");
+    } finally {
+      setIsCallingCivilProtection(false);
+    }
+  }
+
   async function runScenarioCommand(path: string, body?: Record<string, unknown>) {
     setIsScenarioBusy(true);
     setError(null);
@@ -663,10 +768,43 @@ export function App() {
       }
 
       setEvents([]);
+      setCalls([]);
+      setDismissedAlertEventIds(new Set());
     } catch (clearError) {
       setError(clearError instanceof Error ? clearError.message : "Could not clear events.");
     } finally {
       setIsClearingEvents(false);
+    }
+  }
+
+  async function clearAlerts() {
+    const eventToDismiss = activeAlertEvent;
+
+    if (!eventToDismiss && calls.length === 0) {
+      return;
+    }
+
+    setIsClearingAlerts(true);
+    setError(null);
+
+    try {
+      const response = await fetch(apiUrl("/api/calls"), {
+        method: "DELETE"
+      });
+      const body = (await response.json()) as ClearAlertsResponse;
+
+      if (!response.ok || !body.ok) {
+        throw new Error(body.error ?? `${response.status} ${response.statusText}`);
+      }
+
+      setCalls([]);
+      if (eventToDismiss) {
+        setDismissedAlertEventIds((currentIds) => new Set(currentIds).add(eventToDismiss.eventId));
+      }
+    } catch (clearError) {
+      setError(clearError instanceof Error ? clearError.message : "Could not clear alerts.");
+    } finally {
+      setIsClearingAlerts(false);
     }
   }
 
@@ -696,6 +834,10 @@ export function App() {
             <strong>{formatScenarioClock(scenarioState)}</strong>
             <div className="scenario-progress" aria-hidden="true">
               <span style={{ width: `${scenarioProgress(scenarioState)}%` }} />
+            </div>
+            <div className="scenario-scale">
+              <span>{formatScenarioBoundary(scenarioState?.virtualStartIso, "2026-04-25T02:30:00.000Z")}</span>
+              <span>{formatScenarioBoundary(scenarioState?.virtualEndIso, "2026-04-25T08:30:00.000Z")}</span>
             </div>
             <div className="scenario-meta">
               <span>{scenarioState?.status ?? "idle"}</span>
@@ -831,27 +973,69 @@ export function App() {
         </section>
 
         <section className="panel-section alert-tracking-panel">
-          <div className="section-heading">
-            <BellRing size={16} />
-            <h2>Alert Tracking</h2>
+          <div className="section-heading section-heading-action">
+            <div className="section-heading-label">
+              <BellRing size={16} />
+              <h2>Alert Tracking</h2>
+            </div>
+            <button
+              className="quiet-button compact-button"
+              type="button"
+              onClick={clearAlerts}
+              disabled={(!activeAlertEvent && calls.length === 0) || isClearingAlerts}
+              title="Clear current alert tracking"
+            >
+              <Trash2 size={13} />
+              {isClearingAlerts ? "Clearing" : "Clear alerts"}
+            </button>
           </div>
           <div className="alert-tracking-list">
-            {alertTrackingItems.map((item) => (
-              <article className={`alert-tracking-item ${item.tone}`} key={item.id}>
-                <div className="alert-tracking-icon">
-                  {item.tone === "standby" ? <CheckCircle2 size={15} /> : <PhoneCall size={15} />}
-                </div>
-                <div>
-                  <div className="alert-tracking-head">
-                    <strong>{item.title}</strong>
-                    <span>{item.status}</span>
+            {alertTrackingItems.length ? (
+              alertTrackingItems.map((item) => (
+                <article className={`alert-tracking-item ${item.tone}`} key={item.id}>
+                  <div className="alert-tracking-icon">
+                    {item.tone === "standby" ? <CheckCircle2 size={15} /> : <PhoneCall size={15} />}
                   </div>
-                  <p>{item.target}</p>
-                  <em>{item.detail}</em>
-                </div>
-              </article>
-            ))}
+                  <div>
+                    <div className="alert-tracking-head">
+                      <strong>{item.title}</strong>
+                      <span>{item.status}</span>
+                    </div>
+                    <p>{item.target}</p>
+                    <em>{item.detail}</em>
+                  </div>
+                </article>
+              ))
+            ) : (
+              <div className="empty-state alert-empty">No active alert</div>
+            )}
           </div>
+          <button
+            className="escalation-button"
+            type="button"
+            onClick={callCivilProtection}
+            disabled={
+              !activeAlertEvent ||
+              isCallingCivilProtection ||
+              latestCall?.status === "calling" ||
+              latestCall?.status === "acknowledged"
+            }
+            title="Call the configured Civil Protection demo recipient"
+          >
+            <PhoneCall size={16} />
+            {isCallingCivilProtection
+              ? "Calling"
+              : latestCall?.status === "acknowledged"
+                ? "Acknowledged"
+                : "Call Civil Protection"}
+          </button>
+          {latestCall ? (
+            <div className={`call-receipt ${latestCall.status}`}>
+              <span>{latestCall.provider}</span>
+              <strong>{callStatusLabel(latestCall)}</strong>
+              <p>{latestCall.transcriptSummary ?? latestCall.acknowledgement ?? latestCall.incidentSummary}</p>
+            </div>
+          ) : null}
         </section>
 
         <section className="panel-section station-panel">

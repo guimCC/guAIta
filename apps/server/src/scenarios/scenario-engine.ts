@@ -9,7 +9,7 @@ import {
   type ScenarioDefinition
 } from "./morning-frontier-breach.js";
 
-const allowedSpeeds = new Set([1, 10, 60, 120, 240]);
+const allowedSpeeds = new Set([1, 10, 60, 120, 240, 480, 720, 1440]);
 const tickMs = 1_000;
 
 interface ScenarioEngineOptions {

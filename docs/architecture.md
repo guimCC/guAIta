@@ -19,8 +19,9 @@ flowchart LR
   A["Arduino UNO Q\nCamera + Edge AI model"] -->|HTTP JSON| B["Fastify Server"]
   C["Scenario Engine"] -->|same event schema| B
   D["Manual Demo Controls"] -->|same event schema| B
-  B --> E["SQLite\nstations, zones, events, actions"]
+  B --> E["SQLite\nstations, zones, events, calls"]
   B -->|Socket.IO realtime| F["React Dashboard"]
+  B -->|optional outbound call| I["ElevenLabs + Twilio\nvoice escalation"]
   F --> G["MapLibre Map\nstations, zones, alerts"]
   F --> H["Sidebars\nmetrics, actions, timeline"]
 ```
@@ -34,6 +35,8 @@ flowchart LR
 5. The action recommender creates one or more recommended actions.
 6. Socket.IO broadcasts the new detection, alert, and action to connected dashboards.
 7. The frontend updates the map, sidebars, metrics, and event graph.
+8. If the operator escalates, the backend stores a Civil Protection call record and optionally starts an ElevenLabs outbound call with the incident packet.
+9. ElevenLabs acknowledgement and post-call webhooks update the stored call and broadcast `call.updated`.
 
 ## Proposed Monorepo Layout
 
@@ -83,6 +86,10 @@ GET  /api/events
 GET  /api/stations
 GET  /api/zones
 GET  /api/actions
+GET  /api/calls
+POST /api/calls/civil-protection
+POST /api/calls/civil-protection/acknowledge
+POST /api/calls/elevenlabs/post-call
 POST /api/scenario/start
 POST /api/scenario/pause
 POST /api/scenario/resume
@@ -122,6 +129,7 @@ zones
 events
 alerts
 recommended_actions
+calls
 scenario_runs
 ```
 
@@ -140,6 +148,8 @@ detection.created
 alert.created
 action.created
 action.updated
+call.updated
+calls.cleared
 station.updated
 scenario.started
 scenario.paused

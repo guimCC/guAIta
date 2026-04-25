@@ -2,13 +2,21 @@ import cors from "@fastify/cors";
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import { Server as SocketServer } from "socket.io";
 import {
+  AcknowledgeCivilProtectionCallInputSchema,
+  StartCivilProtectionCallInputSchema,
   DetectionEventInputSchema,
   SOCKET_EVENTS,
+  type CivilProtectionCall,
+  type DetectionEvent,
   type DetectionEventInput,
   type DetectionSource
 } from "@guaita/shared";
 import { config } from "./config.js";
 import { GuaitaDatabase } from "./db/database.js";
+import {
+  createCivilProtectionCallRecord,
+  placeElevenLabsOutboundCall
+} from "./domain/civil-protection-calls.js";
 import { assertSource, estimateSeverity, normalizeDetectionEvent } from "./domain/detections.js";
 import { ScenarioEngine } from "./scenarios/scenario-engine.js";
 
@@ -83,12 +91,216 @@ export async function buildServer() {
       deletedCount,
       clearedAt: new Date().toISOString()
     });
+    io.emit(SOCKET_EVENTS.callsCleared, {
+      clearedAt: new Date().toISOString()
+    });
 
     return {
       ok: true,
       deletedCount
     };
   });
+
+  app.get("/api/calls", async (request: FastifyRequest<{ Querystring: { limit?: string } }>) => {
+    const limit = request.query.limit ? Number(request.query.limit) : 100;
+
+    return {
+      calls: db.listCalls(Number.isFinite(limit) ? limit : 100)
+    };
+  });
+
+  app.delete("/api/calls", async () => {
+    const deletedCount = db.clearCalls();
+    io.emit(SOCKET_EVENTS.callsCleared, {
+      deletedCount,
+      clearedAt: new Date().toISOString()
+    });
+
+    return {
+      ok: true,
+      deletedCount
+    };
+  });
+
+  app.post("/api/calls/civil-protection", async (request, reply) => {
+    const parsed = StartCivilProtectionCallInputSchema.safeParse(request.body);
+
+    if (!parsed.success) {
+      return reply.code(400).send({
+        ok: false,
+        error: "invalid_call_request",
+        issues: parsed.error.flatten()
+      });
+    }
+
+    const event = db.getEvent(parsed.data.eventId);
+    if (!event) {
+      return reply.code(404).send({
+        ok: false,
+        error: "unknown_event",
+        eventId: parsed.data.eventId
+      });
+    }
+
+    const station = db.getStation(event.stationId);
+    if (!station) {
+      return reply.code(404).send({
+        ok: false,
+        error: "unknown_station",
+        stationId: event.stationId
+      });
+    }
+
+    const toNumber = parsed.data.toNumber ?? config.civilProtectionDemoNumber;
+    if (!toNumber) {
+      return reply.code(400).send({
+        ok: false,
+        error: "missing_demo_recipient",
+        message: "Set CIVIL_PROTECTION_DEMO_NUMBER or pass toNumber in the request."
+      });
+    }
+
+    let call = createCivilProtectionCallRecord(
+      event,
+      station,
+      toNumber,
+      config.callsEnabled ? "elevenlabs" : "demo"
+    );
+    db.insertCall(call);
+    emitCallUpdated(io, call);
+
+    if (!config.callsEnabled) {
+      return reply.code(202).send({
+        ok: true,
+        call,
+        message: "Call record stored. Set CALLS_ENABLED=true and ElevenLabs credentials to place the real outbound call."
+      });
+    }
+
+    try {
+      const outboundCall = await placeElevenLabsOutboundCall(call, event, station);
+      call = {
+        ...call,
+        status: "calling",
+        conversationId: outboundCall.conversationId,
+        callSid: outboundCall.callSid,
+        updatedAt: new Date().toISOString()
+      };
+      db.updateCall(call);
+      emitCallUpdated(io, call);
+
+      return reply.code(201).send({
+        ok: true,
+        call
+      });
+    } catch (error) {
+      call = {
+        ...call,
+        status: "failed",
+        error: error instanceof Error ? error.message : "Outbound call failed.",
+        updatedAt: new Date().toISOString()
+      };
+      db.updateCall(call);
+      emitCallUpdated(io, call);
+
+      return reply.code(502).send({
+        ok: false,
+        error: "outbound_call_failed",
+        message: call.error,
+        call
+      });
+    }
+  });
+
+  app.post(
+    "/api/calls/civil-protection/acknowledge",
+    async (request: FastifyRequest<{ Querystring: { token?: string } }>, reply) => {
+      if (!isAuthorizedCallWebhook(request)) {
+        return reply.code(401).send({
+          ok: false,
+          error: "unauthorized"
+        });
+      }
+
+      const parsed = AcknowledgeCivilProtectionCallInputSchema.safeParse(request.body);
+
+      if (!parsed.success) {
+        return reply.code(400).send({
+          ok: false,
+          error: "invalid_acknowledgement",
+          issues: parsed.error.flatten()
+        });
+      }
+
+      const call = findCall(db, parsed.data.callId, parsed.data.eventId ?? parsed.data.incidentId);
+      if (!call) {
+        return reply.code(404).send({
+          ok: false,
+          error: "unknown_call"
+        });
+      }
+
+      const updatedCall: CivilProtectionCall = {
+        ...call,
+        status: "acknowledged",
+        acknowledgement: parsed.data.notes ?? parsed.data.outcome ?? "Civil Protection acknowledged the incident.",
+        acknowledgedAt: call.acknowledgedAt ?? new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+      db.updateCall(updatedCall);
+      emitCallUpdated(io, updatedCall);
+
+      return {
+        ok: true,
+        call: updatedCall
+      };
+    }
+  );
+
+  app.post(
+    "/api/calls/elevenlabs/post-call",
+    async (request: FastifyRequest<{ Querystring: { token?: string } }>, reply) => {
+      if (!isAuthorizedCallWebhook(request)) {
+        return reply.code(401).send({
+          ok: false,
+          error: "unauthorized"
+        });
+      }
+
+      const webhookBody = request.body as Record<string, unknown> | undefined;
+      const extracted = extractPostCallData(webhookBody);
+      const call = findCall(db, extracted.callId, extracted.eventId) ??
+        (extracted.conversationId ? db.getCallByConversationId(extracted.conversationId) : undefined);
+
+      if (!call) {
+        request.log.warn({ extracted }, "ignored ElevenLabs post-call webhook for unknown call");
+        return {
+          ok: true,
+          ignored: true
+        };
+      }
+
+      const completedAt = new Date().toISOString();
+      const updatedCall: CivilProtectionCall = {
+        ...call,
+        status: call.status === "acknowledged" ? "acknowledged" : extracted.failed ? "failed" : "completed",
+        conversationId: extracted.conversationId ?? call.conversationId,
+        transcriptSummary: extracted.transcriptSummary ?? call.transcriptSummary,
+        transcript: extracted.transcript ?? call.transcript,
+        error: extracted.error ?? call.error,
+        completedAt,
+        updatedAt: completedAt
+      };
+
+      db.updateCall(updatedCall);
+      emitCallUpdated(io, updatedCall);
+
+      return {
+        ok: true,
+        call: updatedCall
+      };
+    }
+  );
 
   app.get("/api/scenario/state", async () => ({
     scenario: scenarioEngine.getState()
@@ -160,7 +372,11 @@ export async function buildServer() {
       });
     }
 
-    return createDetection(request, reply, "device", db, io);
+    return createDetection(request, reply, "device", db, io, (event) => {
+      if (event.source === "device" && scenarioEngine.getState().status === "running") {
+        scenarioEngine.pause();
+      }
+    });
   });
 
   app.post("/api/manual/events", async (request, reply) => {
@@ -175,7 +391,8 @@ async function createDetection(
   reply: FastifyReply,
   expectedSource: DetectionSource,
   db: GuaitaDatabase,
-  io: SocketServer
+  io: SocketServer,
+  onStored?: (event: DetectionEvent) => void
 ) {
   const parsed = DetectionEventInputSchema.safeParse(request.body);
 
@@ -199,6 +416,7 @@ async function createDetection(
 
   try {
     const { event, severity } = storeDetection(parsed.data, db, io);
+    onStored?.(event);
 
     return reply.code(201).send({
       ok: true,
@@ -224,6 +442,59 @@ async function createDetection(
 
     throw error;
   }
+}
+
+function emitCallUpdated(io: SocketServer, call: CivilProtectionCall): void {
+  io.emit(SOCKET_EVENTS.callUpdated, call);
+}
+
+function findCall(db: GuaitaDatabase, callId?: string, eventId?: string): CivilProtectionCall | undefined {
+  if (callId) {
+    const call = db.getCall(callId);
+    if (call) {
+      return call;
+    }
+  }
+
+  return eventId ? db.getLatestCallForEvent(eventId) : undefined;
+}
+
+function isAuthorizedCallWebhook(request: FastifyRequest<{ Querystring: { token?: string } }>): boolean {
+  if (!config.elevenLabsWebhookToken) {
+    return true;
+  }
+
+  const headerToken = request.headers["x-guaita-webhook-token"];
+  return headerToken === config.elevenLabsWebhookToken || request.query.token === config.elevenLabsWebhookToken;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+}
+
+function readString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function extractPostCallData(webhookBody: Record<string, unknown> | undefined) {
+  const data = asRecord(webhookBody?.data) ?? webhookBody ?? {};
+  const metadata = asRecord(data.metadata);
+  const analysis = asRecord(data.analysis);
+  const initiationData = asRecord(data.conversation_initiation_client_data);
+  const dynamicVariables = asRecord(initiationData?.dynamic_variables);
+  const failureReason = readString(data.failure_reason) ?? readString(metadata?.termination_reason);
+  const callSuccessful = readString(analysis?.call_successful);
+  const webhookType = readString(webhookBody?.type);
+
+  return {
+    callId: readString(dynamicVariables?.call_id),
+    eventId: readString(dynamicVariables?.incident_id) ?? readString(dynamicVariables?.event_id),
+    conversationId: readString(data.conversation_id),
+    transcriptSummary: readString(analysis?.transcript_summary),
+    transcript: data.transcript,
+    error: failureReason,
+    failed: webhookType === "call_initiation_failure" || callSuccessful === "failure" || Boolean(failureReason)
+  };
 }
 
 function storeDetection(input: DetectionEventInput, db: GuaitaDatabase, io: SocketServer) {

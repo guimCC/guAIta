@@ -2,9 +2,11 @@ import DatabaseConstructor from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import {
+  CivilProtectionCallSchema,
   DetectionEventSchema,
   StationSchema,
   ZoneSchema,
+  type CivilProtectionCall,
   type DetectionEvent,
   type Station,
   type Zone
@@ -49,6 +51,14 @@ export class GuaitaDatabase {
     return row ? StationSchema.parse(JSON.parse(row.payload)) : undefined;
   }
 
+  getEvent(eventId: string): DetectionEvent | undefined {
+    const row = this.sqlite
+      .prepare("select payload from events where event_id = ?")
+      .get(eventId) as JsonRow | undefined;
+
+    return row ? DetectionEventSchema.parse(JSON.parse(row.payload)) : undefined;
+  }
+
   listZones(): Zone[] {
     const rows = this.sqlite
       .prepare("select payload from zones order by id asc")
@@ -83,8 +93,87 @@ export class GuaitaDatabase {
   }
 
   clearEvents(): number {
+    this.clearCalls();
     const result = this.sqlite.prepare("delete from events").run();
     return result.changes;
+  }
+
+  clearCalls(): number {
+    const result = this.sqlite.prepare("delete from calls").run();
+    return result.changes;
+  }
+
+  insertCall(call: CivilProtectionCall): void {
+    this.sqlite
+      .prepare(
+        `insert into calls (id, event_id, status, provider, conversation_id, call_sid, payload, created_at, updated_at)
+         values (@id, @eventId, @status, @provider, @conversationId, @callSid, @payload, @createdAt, @updatedAt)`
+      )
+      .run({
+        id: call.id,
+        eventId: call.eventId,
+        status: call.status,
+        provider: call.provider,
+        conversationId: call.conversationId ?? null,
+        callSid: call.callSid ?? null,
+        payload: JSON.stringify(call),
+        createdAt: call.createdAt,
+        updatedAt: call.updatedAt
+      });
+  }
+
+  updateCall(call: CivilProtectionCall): void {
+    this.sqlite
+      .prepare(
+        `update calls
+         set status = @status,
+             conversation_id = @conversationId,
+             call_sid = @callSid,
+             payload = @payload,
+             updated_at = @updatedAt
+         where id = @id`
+      )
+      .run({
+        id: call.id,
+        status: call.status,
+        conversationId: call.conversationId ?? null,
+        callSid: call.callSid ?? null,
+        payload: JSON.stringify(call),
+        updatedAt: call.updatedAt
+      });
+  }
+
+  getCall(callId: string): CivilProtectionCall | undefined {
+    const row = this.sqlite
+      .prepare("select payload from calls where id = ?")
+      .get(callId) as JsonRow | undefined;
+
+    return row ? CivilProtectionCallSchema.parse(JSON.parse(row.payload)) : undefined;
+  }
+
+  getLatestCallForEvent(eventId: string): CivilProtectionCall | undefined {
+    const row = this.sqlite
+      .prepare("select payload from calls where event_id = ? order by created_at desc limit 1")
+      .get(eventId) as JsonRow | undefined;
+
+    return row ? CivilProtectionCallSchema.parse(JSON.parse(row.payload)) : undefined;
+  }
+
+  getCallByConversationId(conversationId: string): CivilProtectionCall | undefined {
+    const row = this.sqlite
+      .prepare("select payload from calls where conversation_id = ? order by created_at desc limit 1")
+      .get(conversationId) as JsonRow | undefined;
+
+    return row ? CivilProtectionCallSchema.parse(JSON.parse(row.payload)) : undefined;
+  }
+
+  listCalls(limit = 100): CivilProtectionCall[] {
+    const boundedLimit = Math.max(1, Math.min(500, Math.trunc(limit)));
+    const rows = this.sqlite
+      .prepare("select payload from calls order by created_at desc limit ?")
+      .all(boundedLimit) as JsonRow[];
+
+    return rows.map((row) => CivilProtectionCallSchema.parse(JSON.parse(row.payload)));
   }
 
   private initialize(): void {
@@ -108,8 +197,23 @@ export class GuaitaDatabase {
         created_at text not null
       );
 
+      create table if not exists calls (
+        id text primary key,
+        event_id text not null,
+        status text not null,
+        provider text not null,
+        conversation_id text,
+        call_sid text,
+        payload text not null,
+        created_at text not null,
+        updated_at text not null
+      );
+
       create index if not exists events_observed_at_idx on events(observed_at desc);
       create index if not exists events_station_id_idx on events(station_id);
+      create index if not exists calls_event_id_idx on calls(event_id);
+      create index if not exists calls_conversation_id_idx on calls(conversation_id);
+      create index if not exists calls_created_at_idx on calls(created_at desc);
     `);
   }
 
@@ -126,6 +230,9 @@ export class GuaitaDatabase {
     );
 
     const seed = this.sqlite.transaction(() => {
+      this.sqlite.prepare("delete from stations").run();
+      this.sqlite.prepare("delete from zones").run();
+
       for (const station of seedStations) {
         insertStation.run({ id: station.id, payload: JSON.stringify(station) });
       }
