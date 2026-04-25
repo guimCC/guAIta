@@ -507,10 +507,10 @@ export async function buildServer() {
       });
     }
 
-    return createDetection(request, reply, "device", db, io, async (event) => {
+    return createDetection(request, reply, "device", db, io, () => {
       setDeviceListenerEnabled(false, "device.event.accepted");
       pauseScenarioIfRunning(scenarioEngine);
-      return startCivilProtectionCallForDetection(event, db, io);
+      return undefined;
     });
   });
 
@@ -528,9 +528,9 @@ export async function buildServer() {
   });
 
   app.post("/api/manual/events", async (request, reply) => {
-    return createDetection(request, reply, "manual", db, io, async (event) => {
+    return createDetection(request, reply, "manual", db, io, () => {
       pauseScenarioIfRunning(scenarioEngine);
-      return startCivilProtectionCallForDetection(event, db, io);
+      return undefined;
     });
   });
 
@@ -672,34 +672,6 @@ function pauseScenarioIfRunning(scenarioEngine: ScenarioEngine): void {
   if (scenarioEngine.getState().status === "running") {
     scenarioEngine.pause();
   }
-}
-
-async function startCivilProtectionCallForDetection(
-  event: DetectionEvent,
-  db: GuaitaDatabase,
-  io: SocketServer
-): Promise<Record<string, unknown> | undefined> {
-  const station = db.getStation(event.stationId);
-  const toNumber = config.civilProtectionDemoNumber;
-
-  if (!station || !toNumber) {
-    return undefined;
-  }
-
-  const callResult = await startCivilProtectionCall({
-    event,
-    station,
-    toNumber,
-    db,
-    io
-  });
-
-  return {
-    call: callResult.call,
-    callReused: callResult.reused,
-    callFailed: callResult.failed,
-    callMessage: callResult.message
-  };
 }
 
 async function startCivilProtectionCall({

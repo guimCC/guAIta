@@ -45,12 +45,16 @@ interface CallStage {
   label: string;
   state: CallStageState;
   timeLabel: string;
-  detail: string;
 }
 
 const DEMO_DETECTION_STATION_ID = "collserola-control-02";
 const DETECTION_FLASH_TTL_MS = 6_500;
 const DETECTION_FLASH_INTERVAL_MS = 80;
+const ACTIONABLE_CONFIDENCE_THRESHOLD = 0.85;
+const SCENARIO_WATCH_CONFIDENCE_THRESHOLD = 0.6;
+const LOW_LIGHT_LUX_THRESHOLD = 250;
+const HIGH_HUMIDITY_THRESHOLD = 80;
+const LOW_BATTERY_THRESHOLD = 30;
 
 interface StationsResponse {
   stations: Station[];
@@ -101,17 +105,10 @@ interface CreateEventResponse {
   ok: boolean;
   event?: DetectionEvent;
   eventId?: string;
-  call?: CivilProtectionCall;
   error?: string;
 }
 
 interface ClearEventsResponse {
-  ok: boolean;
-  deletedCount: number;
-  error?: string;
-}
-
-interface ClearAlertsResponse {
   ok: boolean;
   deletedCount: number;
   error?: string;
@@ -124,13 +121,21 @@ interface ScenarioCommandResponse {
   message?: string;
 }
 
-interface AlertTrackingItem {
+interface ActionRequiredItem {
   id: string;
   title: string;
   target: string;
   status: string;
   detail: string;
   tone: "standby" | "queued" | "active";
+}
+
+interface LightAlertItem {
+  id: string;
+  title: string;
+  value: string;
+  detail: string;
+  tone: "info" | "watch" | "warning";
 }
 
 interface DetectionFlash {
@@ -239,9 +244,9 @@ function callStatusLabel(call: CivilProtectionCall | undefined): string {
     case "calling":
       return "call in progress";
     case "acknowledged":
-      return "response handled";
+      return "alert resolved";
     case "completed":
-      return "needs confirmation";
+      return "awaiting resolution";
     case "failed":
       return "call failed";
   }
@@ -255,7 +260,7 @@ function callStatusDetail(call: CivilProtectionCall): string {
   }
 
   if (call.acknowledgement) {
-    return call.acknowledgement;
+    return call.status === "acknowledged" ? "Operator confirmed response." : call.acknowledgement;
   }
 
   if (call.transcriptSummary) {
@@ -265,35 +270,19 @@ function callStatusDetail(call: CivilProtectionCall): string {
   switch (call.status) {
     case "requested":
       return call.provider === "demo"
-        ? "The escalation was stored in demo mode. Enable real calls to dial the configured recipient."
+        ? "Demo record saved. Real dialing is disabled."
         : "Waiting for ElevenLabs and Twilio to accept the outbound call request.";
     case "calling":
-      return "Provider accepted the request. Waiting for the phone conversation to finish and report back.";
+      return "Conversation started. Waiting for it to end.";
     case "completed":
       return "Call ended. Confirm the response once Civil Protection acknowledged the alert.";
     case "acknowledged":
       return "Civil Protection acknowledged the alert.";
     case "failed":
-      return "The outbound call did not complete. Retry or mark handled manually if the team confirmed outside the call.";
+      return "The outbound call did not complete. Retry or resolve manually if the team confirmed outside the call.";
   }
 
   return "Call status is being updated.";
-}
-
-function shortIdentifier(value: string | null | undefined): string {
-  if (!value) {
-    return "pending";
-  }
-
-  return value.length <= 14 ? value : `${value.slice(0, 10)}...${value.slice(-4)}`;
-}
-
-function redactedPhone(value: string | undefined): string {
-  if (!value) {
-    return "configured recipient";
-  }
-
-  return value.length <= 7 ? value : `${value.slice(0, 4)}...${value.slice(-4)}`;
 }
 
 function timestampLabel(value: string | undefined): string {
@@ -310,49 +299,52 @@ function hasCallClosed(call: CivilProtectionCall): boolean {
 }
 
 function callLifecycleStages(call: CivilProtectionCall): CallStage[] {
+  const isDemo = call.provider === "demo";
   const providerAccepted = hasProviderAccepted(call);
   const callClosed = hasCallClosed(call);
   const failedBeforeProvider = call.status === "failed" && !providerAccepted;
-  const failedAfterProvider = call.status === "failed" && providerAccepted;
-  const providerDetail = providerAccepted
-    ? `Provider accepted${call.providerAcceptedAt ? "" : " before timestamp capture"}.`
-    : call.provider === "demo"
-      ? "Demo mode stored the escalation without dialing."
-      : "Waiting for ElevenLabs/Twilio acceptance.";
-  const conversationDetail = call.conversationId || call.callSid
-    ? `Conversation ${shortIdentifier(call.conversationId)} / SID ${shortIdentifier(call.callSid)}.`
-    : providerAccepted
-      ? "Phone leg active or awaiting post-call webhook."
-      : "No phone conversation has started yet.";
+
+  if (isDemo) {
+    return [
+      {
+        id: "event",
+        label: "Incident logged",
+        state: "done",
+        timeLabel: timestampLabel(call.createdAt)
+      },
+      {
+        id: "conversation",
+        label: "Phone call skipped",
+        state: "pending",
+        timeLabel: "skipped"
+      },
+      {
+        id: "handled",
+        label: "Alert resolved",
+        state: call.status === "acknowledged" ? "done" : "pending",
+        timeLabel: timestampLabel(call.acknowledgedAt)
+      }
+    ];
+  }
 
   return [
     {
-      id: "event",
-      label: "Incident locked",
-      state: "done",
-      timeLabel: timestampLabel(call.createdAt),
-      detail: `Event ${shortIdentifier(call.eventId)} is linked to this escalation.`
-    },
-    {
-      id: "provider",
-      label: "Provider accepted",
+      id: "started",
+      label: "Conversation started",
       state: failedBeforeProvider ? "failed" : providerAccepted ? "done" : "current",
-      timeLabel: timestampLabel(call.providerAcceptedAt),
-      detail: providerDetail
+      timeLabel: timestampLabel(call.providerAcceptedAt ?? call.failedAt)
     },
     {
-      id: "conversation",
-      label: "Conversation closed",
-      state: call.status === "failed" ? "failed" : callClosed ? "done" : providerAccepted ? "current" : "pending",
-      timeLabel: timestampLabel(call.completedAt ?? call.failedAt),
-      detail: failedAfterProvider ? call.error ?? "Call failed after provider acceptance." : conversationDetail
+      id: "ended",
+      label: "Conversation ended",
+      state: call.status === "failed" && providerAccepted ? "failed" : callClosed ? "done" : providerAccepted ? "current" : "pending",
+      timeLabel: timestampLabel(call.completedAt ?? call.failedAt)
     },
     {
-      id: "handled",
-      label: "Response handled",
+      id: "resolved",
+      label: "Alert resolved",
       state: call.status === "acknowledged" ? "done" : call.status === "failed" ? "pending" : callClosed ? "current" : "pending",
-      timeLabel: timestampLabel(call.acknowledgedAt),
-      detail: call.acknowledgement ?? "Waiting for operator or ElevenLabs tool acknowledgement."
+      timeLabel: timestampLabel(call.acknowledgedAt)
     }
   ];
 }
@@ -368,33 +360,33 @@ function callNextAction(call: CivilProtectionCall): { title: string; detail: str
   if (call.status === "acknowledged") {
     return {
       title: "Ready to clear",
-      detail: "The response is confirmed. You can clear alert tracking for the next demo incident."
+      detail: "Response confirmed."
     };
   }
 
   if (call.status === "completed") {
     return {
-      title: "Confirm response",
-      detail: "The phone call ended. Mark handled once the recipient confirms they will check the area."
+      title: "Resolve alert",
+      detail: "Confirm once the response is handled."
     };
   }
 
   if (call.status === "calling") {
     return {
-      title: "Waiting on call result",
-      detail: "Keep the call open until ElevenLabs posts completion or the tool acknowledges the alert."
+      title: "Conversation active",
+      detail: "Waiting for the call to end."
     };
   }
 
   return {
     title: call.provider === "demo" ? "Demo mode" : "Waiting on provider",
     detail: call.provider === "demo"
-      ? "No phone call was placed because real outbound calls are disabled."
+      ? "Outbound dialing disabled."
       : "ElevenLabs has not returned a conversation identifier yet."
   };
 }
 
-function callTone(call: CivilProtectionCall | undefined, isHighConfidence: boolean): AlertTrackingItem["tone"] {
+function callTone(call: CivilProtectionCall | undefined, isHighConfidence: boolean): ActionRequiredItem["tone"] {
   if (call?.status === "acknowledged") {
     return "standby";
   }
@@ -408,6 +400,33 @@ function callTone(call: CivilProtectionCall | undefined, isHighConfidence: boole
 
 function latestCallForEvent(calls: CivilProtectionCall[], eventId: string | undefined): CivilProtectionCall | undefined {
   return eventId ? calls.find((call) => call.eventId === eventId) : undefined;
+}
+
+function latestActionableEvent(
+  events: DetectionEvent[],
+  calls: CivilProtectionCall[],
+  resolvedEventIds: Set<string>
+): DetectionEvent | undefined {
+  const unresolvedEvent = events.find((event) => {
+    if (!isEscalationEvent(event) || resolvedEventIds.has(event.eventId)) {
+      return false;
+    }
+
+    return latestCallForEvent(calls, event.eventId)?.status !== "acknowledged";
+  });
+
+  if (unresolvedEvent) {
+    return unresolvedEvent;
+  }
+
+  return events.find((event) => {
+    if (!isEscalationEvent(event)) {
+      return false;
+    }
+
+    return resolvedEventIds.has(event.eventId) ||
+      latestCallForEvent(calls, event.eventId)?.status === "acknowledged";
+  });
 }
 
 function unresolvedEscalationCallEvent(
@@ -481,11 +500,11 @@ function civilProtectionButtonLabel(
   }
 
   if (call.status === "acknowledged") {
-    return "Acknowledged";
+    return "Alert resolved";
   }
 
   if (call.status === "completed") {
-    return "Awaiting handled";
+    return "Call completed";
   }
 
   return "Call in progress";
@@ -527,26 +546,98 @@ function shouldRenderPublicStatusPage(): boolean {
   return ["guaita.biz", "www.guaita.biz"].includes(window.location.hostname);
 }
 
-function buildAlertTrackingItems(
+function buildLightAlerts(events: DetectionEvent[], stationById: Map<string, Station>): LightAlertItem[] {
+  const items: LightAlertItem[] = [];
+
+  for (const event of events) {
+    const stationName = stationLabel(event.stationId, stationById);
+    const observedAt = formatTime(event.observedAt);
+
+    if (event.source === "scenario" && event.confidence >= SCENARIO_WATCH_CONFIDENCE_THRESHOLD) {
+      items.push({
+        id: `${event.eventId}-scenario-watch`,
+        title: "Scenario watch",
+        value: percent(event.confidence),
+        detail: `${stationName} at ${observedAt}`,
+        tone: "info"
+      });
+    }
+
+    if (event.confidence < ACTIONABLE_CONFIDENCE_THRESHOLD) {
+      items.push({
+        id: `${event.eventId}-confidence`,
+        title: "Monitor confidence",
+        value: percent(event.confidence),
+        detail: `${stationName} below threshold`,
+        tone: "watch"
+      });
+    }
+
+    if (event.lightLux !== undefined && event.lightLux < LOW_LIGHT_LUX_THRESHOLD) {
+      items.push({
+        id: `${event.eventId}-light`,
+        title: "Low light",
+        value: formatLight(event.lightLux),
+        detail: `${stationName} at ${observedAt}`,
+        tone: "watch"
+      });
+    }
+
+    if (event.humidityPct !== undefined && event.humidityPct >= HIGH_HUMIDITY_THRESHOLD) {
+      items.push({
+        id: `${event.eventId}-humidity`,
+        title: "High humidity",
+        value: formatHumidity(event.humidityPct),
+        detail: `${stationName} at ${observedAt}`,
+        tone: "info"
+      });
+    }
+
+    if (event.batteryPct !== undefined && event.batteryPct <= LOW_BATTERY_THRESHOLD) {
+      items.push({
+        id: `${event.eventId}-battery-low`,
+        title: "Low battery",
+        value: formatBattery(event.batteryPct),
+        detail: `${stationName} at ${observedAt}`,
+        tone: "warning"
+      });
+    }
+
+    if (event.batteryPct === undefined) {
+      items.push({
+        id: `${event.eventId}-battery-unknown`,
+        title: "Battery unknown",
+        value: "n/a",
+        detail: `${stationName} at ${observedAt}`,
+        tone: "info"
+      });
+    }
+  }
+
+  return items;
+}
+
+function buildActionRequiredItems(
   latestEvent: DetectionEvent | undefined,
   stationById: Map<string, Station>,
-  latestCall: CivilProtectionCall | undefined
-): AlertTrackingItem[] {
+  latestCall: CivilProtectionCall | undefined,
+  isResolved: boolean
+): ActionRequiredItem[] {
   if (!latestEvent || !isEscalationEvent(latestEvent)) {
     return [];
   }
 
   const stationName = stationLabel(latestEvent.stationId, stationById);
-  const status = latestCall ? callStatusLabel(latestCall) : "ready to call";
+  const status = isResolved ? "resolved" : latestCall ? "unresolved" : "needs review";
 
   return [
     {
-      id: `${latestEvent.eventId}-civil-protection`,
-      title: "Civil Protection",
-      target: latestEvent.source === "device" ? "Live device escalation" : "Manual Edge AI simulation",
+      id: `${latestEvent.eventId}-action-required`,
+      title: stationName,
+      target: latestEvent.source === "device" ? "Live device detection" : "Manual Edge AI simulation",
       status,
-      detail: latestCall?.acknowledgement ?? `${stationName}, ${percent(latestEvent.confidence)} confidence`,
-      tone: callTone(latestCall, true)
+      detail: `${percent(latestEvent.confidence)} confidence at ${formatTime(latestEvent.observedAt)}`,
+      tone: isResolved ? "standby" : callTone(latestCall, latestEvent.confidence >= ACTIONABLE_CONFIDENCE_THRESHOLD)
     }
   ];
 }
@@ -947,13 +1038,12 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [isPosting, setIsPosting] = useState(false);
   const [isCallingCivilProtection, setIsCallingCivilProtection] = useState(false);
-  const [isMarkingCallHandled, setIsMarkingCallHandled] = useState(false);
+  const [isResolvingAlert, setIsResolvingAlert] = useState(false);
   const [isClearingEvents, setIsClearingEvents] = useState(false);
-  const [isClearingAlerts, setIsClearingAlerts] = useState(false);
   const [isScenarioBusy, setIsScenarioBusy] = useState(false);
   const [isSettingDeviceListening, setIsSettingDeviceListening] = useState(false);
   const [expandedStationId, setExpandedStationId] = useState<string | null>(null);
-  const [dismissedAlertEventIds, setDismissedAlertEventIds] = useState<Set<string>>(() => new Set());
+  const [resolvedAlertEventIds, setResolvedAlertEventIds] = useState<Set<string>>(() => new Set());
   const stationListRef = useRef<HTMLDivElement | null>(null);
   const [listenFromDevice, setListenFromDevice] = useState(false);
   const listenFromDeviceRef = useRef(false);
@@ -979,11 +1069,15 @@ export function App() {
     [currentCalls, events]
   );
   const latestEscalationEvent = useMemo(
-    () => events.find((event) => isEscalationEvent(event) && !dismissedAlertEventIds.has(event.eventId)),
-    [dismissedAlertEventIds, events]
+    () => latestActionableEvent(events, currentCalls, resolvedAlertEventIds),
+    [currentCalls, events, resolvedAlertEventIds]
   );
   const activeAlertEvent = activeCallEvent ?? latestEscalationEvent;
   const latestCall = latestCallForEvent(currentCalls, activeAlertEvent?.eventId);
+  const activeAlertResolved = Boolean(
+    activeAlertEvent &&
+      (resolvedAlertEventIds.has(activeAlertEvent.eventId) || latestCall?.status === "acknowledged")
+  );
   const activeStationCount = stations.filter((station) => station.status === "online").length;
   const telemetryStationCount = latestTelemetryByStation.size;
   const sortedStations = useMemo(() => {
@@ -1004,11 +1098,15 @@ export function App() {
       return a.name.localeCompare(b.name);
     });
   }, [latestTelemetryByStation, stations]);
-  const alertTrackingItems = useMemo(
-    () => buildAlertTrackingItems(activeAlertEvent, stationById, latestCall),
-    [activeAlertEvent, latestCall, stationById]
+  const lightAlerts = useMemo(
+    () => buildLightAlerts(events, stationById),
+    [events, stationById]
   );
-  const canCallCivilProtection = Boolean(activeAlertEvent) && canStartCivilProtectionCall(latestCall);
+  const actionRequiredItems = useMemo(
+    () => buildActionRequiredItems(activeAlertEvent, stationById, latestCall, activeAlertResolved),
+    [activeAlertEvent, activeAlertResolved, latestCall, stationById]
+  );
+  const canCallCivilProtection = Boolean(activeAlertEvent) && !activeAlertResolved && canStartCivilProtectionCall(latestCall);
   const civilProtectionCallLabel = civilProtectionButtonLabel(
     latestCall,
     isCallingCivilProtection,
@@ -1129,7 +1227,7 @@ export function App() {
       }
 
       setEvents((currentEvents) => upsertEvent(currentEvents, event));
-      setDismissedAlertEventIds((currentIds) => {
+      setResolvedAlertEventIds((currentIds) => {
         if (!currentIds.has(event.eventId)) {
           return currentIds;
         }
@@ -1154,7 +1252,7 @@ export function App() {
     });
     socket.on(SOCKET_EVENTS.eventsCleared, () => {
       setEvents([]);
-      setDismissedAlertEventIds(new Set());
+      setResolvedAlertEventIds(new Set());
     });
     socket.on(SOCKET_EVENTS.callUpdated, (call: CivilProtectionCall) => {
       if (ignoredDeviceEventIdsRef.current.has(call.eventId)) {
@@ -1247,9 +1345,6 @@ export function App() {
       if (connectionState !== "connected" && createdEvent) {
         setEvents((currentEvents) => upsertEvent(currentEvents, createdEvent));
       }
-      if (body.call) {
-        setCalls((currentCalls) => upsertCall(currentCalls, body.call as CivilProtectionCall));
-      }
     } catch (postError) {
       setError(postError instanceof Error ? postError.message : "Simulation failed.");
     } finally {
@@ -1295,13 +1390,19 @@ export function App() {
     }
   }
 
-  async function markCallHandled() {
-    if (!latestCall) {
-      setError("No Civil Protection call to mark as handled.");
+  async function resolveActiveAlert() {
+    if (!activeAlertEvent) {
+      setError("No active alert to resolve.");
       return;
     }
 
-    setIsMarkingCallHandled(true);
+    if (!latestCall) {
+      setResolvedAlertEventIds((currentIds) => new Set(currentIds).add(activeAlertEvent.eventId));
+      setError(null);
+      return;
+    }
+
+    setIsResolvingAlert(true);
     setError(null);
 
     try {
@@ -1323,9 +1424,9 @@ export function App() {
 
       setCalls((currentCalls) => upsertCall(currentCalls, body.call as CivilProtectionCall));
     } catch (callError) {
-      setError(callError instanceof Error ? callError.message : "Could not mark call as handled.");
+      setError(callError instanceof Error ? callError.message : "Could not resolve alert.");
     } finally {
-      setIsMarkingCallHandled(false);
+      setIsResolvingAlert(false);
     }
   }
 
@@ -1380,42 +1481,11 @@ export function App() {
 
       setEvents([]);
       setCalls([]);
-      setDismissedAlertEventIds(new Set());
+      setResolvedAlertEventIds(new Set());
     } catch (clearError) {
       setError(clearError instanceof Error ? clearError.message : "Could not clear events.");
     } finally {
       setIsClearingEvents(false);
-    }
-  }
-
-  async function clearAlerts() {
-    const eventToDismiss = activeAlertEvent;
-
-    if (!eventToDismiss && calls.length === 0) {
-      return;
-    }
-
-    setIsClearingAlerts(true);
-    setError(null);
-
-    try {
-      const response = await fetch(apiUrl("/api/calls"), {
-        method: "DELETE"
-      });
-      const body = (await response.json()) as ClearAlertsResponse;
-
-      if (!response.ok || !body.ok) {
-        throw new Error(body.error ?? `${response.status} ${response.statusText}`);
-      }
-
-      setCalls([]);
-      if (eventToDismiss) {
-        setDismissedAlertEventIds((currentIds) => new Set(currentIds).add(eventToDismiss.eventId));
-      }
-    } catch (clearError) {
-      setError(clearError instanceof Error ? clearError.message : "Could not clear alerts.");
-    } finally {
-      setIsClearingAlerts(false);
     }
   }
 
@@ -1648,178 +1718,181 @@ export function App() {
       <MapPanel stations={stations} zones={zones} events={events} />
 
       <aside className="right-rail">
-        <section className="panel-section latest-panel">
+        <section className="panel-section rail-quarter latest-panel">
           <div className="section-heading">
             <ShieldAlert size={16} />
             <h2>Latest Detection</h2>
           </div>
-          {latestEvent ? (
-            <div className="latest-event">
-              <div className="latest-head">
-                <span className={`source-badge ${latestEvent.source}`}>{latestEvent.source}</span>
-                <strong>{percent(latestEvent.confidence)}</strong>
-              </div>
-              <h3>{stationLabel(latestEvent.stationId, stationById)}</h3>
-              <dl>
-                <div>
-                  <dt>Observed</dt>
-                  <dd>{formatTime(latestEvent.observedAt)}</dd>
+          <div className="quarter-content">
+            {latestEvent ? (
+              <div className="latest-event">
+                <div className="latest-head">
+                  <span className={`source-badge ${latestEvent.source}`}>{latestEvent.source}</span>
+                  <strong>{percent(latestEvent.confidence)}</strong>
                 </div>
-                <div>
-                  <dt>Direction</dt>
-                  <dd>{latestEvent.direction ?? "unknown"}</dd>
-                </div>
-                <div>
-                  <dt>Temperature</dt>
-                  <dd>{formatTemperature(latestEvent.temperatureC)}</dd>
-                </div>
-                <div>
-                  <dt>Humidity</dt>
-                  <dd>{formatHumidity(latestEvent.humidityPct)}</dd>
-                </div>
-                <div>
-                  <dt>Light</dt>
-                  <dd>{formatLight(latestEvent.lightLux)}</dd>
-                </div>
-                <div>
-                  <dt>Battery</dt>
-                  <dd>{formatBattery(latestEvent.batteryPct)}</dd>
-                </div>
-              </dl>
-            </div>
-          ) : (
-            <div className="empty-state">No detections yet</div>
-          )}
-        </section>
-
-        <section className="panel-section alert-tracking-panel">
-          <div className="section-heading section-heading-action">
-            <div className="section-heading-label">
-              <BellRing size={16} />
-              <h2>Alert Tracking</h2>
-            </div>
-            <button
-              className="quiet-button compact-button"
-              type="button"
-              onClick={clearAlerts}
-              disabled={(!activeAlertEvent && calls.length === 0) || isClearingAlerts}
-              title="Clear current alert tracking"
-            >
-              <Trash2 size={13} />
-              {isClearingAlerts ? "Clearing" : "Clear alerts"}
-            </button>
-          </div>
-          <div className="alert-tracking-list">
-            {alertTrackingItems.length ? (
-              alertTrackingItems.map((item) => (
-                <article className={`alert-tracking-item ${item.tone}`} key={item.id}>
-                  <div className="alert-tracking-icon">
-                    {item.tone === "standby" ? <CheckCircle2 size={15} /> : <PhoneCall size={15} />}
+                <h3>{stationLabel(latestEvent.stationId, stationById)}</h3>
+                <dl>
+                  <div>
+                    <dt>Observed</dt>
+                    <dd>{formatTime(latestEvent.observedAt)}</dd>
                   </div>
                   <div>
-                    <div className="alert-tracking-head">
+                    <dt>Direction</dt>
+                    <dd>{latestEvent.direction ?? "unknown"}</dd>
+                  </div>
+                  <div>
+                    <dt>Temp</dt>
+                    <dd>{formatTemperature(latestEvent.temperatureC)}</dd>
+                  </div>
+                  <div>
+                    <dt>Humidity</dt>
+                    <dd>{formatHumidity(latestEvent.humidityPct)}</dd>
+                  </div>
+                  <div>
+                    <dt>Light</dt>
+                    <dd>{formatLight(latestEvent.lightLux)}</dd>
+                  </div>
+                  <div>
+                    <dt>Battery</dt>
+                    <dd>{formatBattery(latestEvent.batteryPct)}</dd>
+                  </div>
+                </dl>
+              </div>
+            ) : (
+              <div className="empty-state compact-empty">No detections yet</div>
+            )}
+          </div>
+        </section>
+
+        <section className="panel-section rail-quarter light-alerts-panel">
+          <div className="section-heading">
+            <Sun size={16} />
+            <h2>Light Alerts</h2>
+          </div>
+          <div className="quarter-content rail-list">
+            {lightAlerts.length ? (
+              lightAlerts.map((item) => (
+                <article className={`light-alert-item ${item.tone}`} key={item.id}>
+                  <div className="light-alert-main">
+                    <div className="light-alert-head">
                       <strong>{item.title}</strong>
-                      <span>{item.status}</span>
+                      <span>{item.value}</span>
                     </div>
-                    <p>{item.target}</p>
-                    <em>{item.detail}</em>
+                    <p>{item.detail}</p>
                   </div>
                 </article>
               ))
             ) : (
-              <div className="empty-state alert-empty">No active alert</div>
+              <div className="empty-state compact-empty">No light alerts</div>
             )}
           </div>
-          <button
-            className="escalation-button"
-            type="button"
-            onClick={callCivilProtection}
-            disabled={!canCallCivilProtection || isCallingCivilProtection}
-            title="Call the configured Civil Protection demo recipient"
-          >
-            <PhoneCall size={16} />
-            {civilProtectionCallLabel}
-          </button>
-          {latestCall ? (
-            <div className={`call-status-card ${latestCall.status}`}>
-              <div className="call-status-top">
-                <div>
-                  <span>Voice escalation</span>
-                  <strong>{callStatusLabel(latestCall)}</strong>
-                </div>
-                <em>{formatTime(latestCall.updatedAt)}</em>
-              </div>
-              <p className="call-status-summary">{callStatusDetail(latestCall)}</p>
-              <div className={`call-next-action ${latestCall.status}`}>
-                <strong>{callNextAction(latestCall).title}</strong>
-                <span>{callNextAction(latestCall).detail}</span>
-              </div>
-              <ol className="call-stage-list" aria-label="Civil Protection call lifecycle">
-                {callLifecycleStages(latestCall).map((stage) => (
-                  <li className={`call-stage ${stage.state}`} key={stage.id}>
-                    <span className="call-stage-dot" aria-hidden="true" />
-                    <div className="call-stage-body">
-                      <div className="call-stage-row">
-                        <strong>{stage.label}</strong>
-                        <span>{stage.timeLabel}</span>
-                      </div>
-                      <p>{stage.detail}</p>
-                    </div>
-                  </li>
-                ))}
-              </ol>
-              <dl className="call-meta">
-                <div>
-                  <dt>Provider</dt>
-                  <dd>{latestCall.provider}</dd>
-                </div>
-                <div>
-                  <dt>Recipient</dt>
-                  <dd>{redactedPhone(latestCall.toNumber)}</dd>
-                </div>
-                <div>
-                  <dt>Incident</dt>
-                  <dd>{shortIdentifier(latestCall.eventId)}</dd>
-                </div>
-                <div>
-                  <dt>Conversation</dt>
-                  <dd>{shortIdentifier(latestCall.conversationId)}</dd>
-                </div>
-                <div>
-                  <dt>Call SID</dt>
-                  <dd>{shortIdentifier(latestCall.callSid)}</dd>
-                </div>
-                <div>
-                  <dt>Created</dt>
-                  <dd>{formatTime(latestCall.createdAt)}</dd>
-                </div>
-              </dl>
-              {latestCall.transcriptSummary ? (
-                <div className="call-transcript-summary">
-                  <span>Transcript summary</span>
-                  <p>{latestCall.transcriptSummary}</p>
-                </div>
-              ) : null}
-              {latestCall.status !== "acknowledged" ? (
-                <button
-                  className="quiet-button call-status-action"
-                  type="button"
-                  onClick={markCallHandled}
-                  disabled={isMarkingCallHandled}
-                  title="Mark Civil Protection response as handled in the dashboard"
-                >
-                  <CheckCircle2 size={14} />
-                  {isMarkingCallHandled
-                    ? "Marking"
-                    : latestCall.status === "failed"
-                      ? "Mark handled manually"
-                      : "Mark handled"}
-                </button>
-              ) : null}
-            </div>
-          ) : null}
         </section>
 
+        <section className="panel-section rail-quarter action-required-panel">
+          <div className="section-heading">
+            <BellRing size={16} />
+            <h2>Action Required</h2>
+          </div>
+          <div className="quarter-content action-required-content">
+            {actionRequiredItems.length ? (
+              <>
+                <div className="alert-tracking-list">
+                  {actionRequiredItems.map((item) => (
+                    <article className={`alert-tracking-item ${item.tone}`} key={item.id}>
+                      <div className="alert-tracking-icon">
+                        {item.tone === "standby" ? <CheckCircle2 size={15} /> : <BellRing size={15} />}
+                      </div>
+                      <div>
+                        <div className="alert-tracking-head">
+                          <strong>{item.title}</strong>
+                          <span>{item.status}</span>
+                        </div>
+                        <p>{item.target}</p>
+                        <em>{item.detail}</em>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+                {!activeAlertResolved ? (
+                  <button
+                    className="quiet-button action-resolve-button"
+                    type="button"
+                    onClick={resolveActiveAlert}
+                    disabled={isResolvingAlert}
+                    title="Resolve current action alert"
+                  >
+                    <CheckCircle2 size={14} />
+                    {isResolvingAlert ? "Resolving" : latestCall ? "Resolve alert" : "Dismiss alert"}
+                  </button>
+                ) : null}
+              </>
+            ) : (
+              <div className="empty-state compact-empty">No action required</div>
+            )}
+          </div>
+        </section>
+
+        <section className="panel-section rail-quarter call-handling-panel">
+          <div className="section-heading section-heading-action">
+            <div className="section-heading-label">
+              <PhoneCall size={16} />
+              <h2>Call Handling</h2>
+            </div>
+            {canCallCivilProtection || isCallingCivilProtection ? (
+              <button
+                className="escalation-button call-header-button"
+                type="button"
+                onClick={callCivilProtection}
+                disabled={!canCallCivilProtection || isCallingCivilProtection}
+                title="Call the configured Civil Protection demo recipient"
+              >
+                <PhoneCall size={13} />
+                {civilProtectionCallLabel}
+              </button>
+            ) : null}
+          </div>
+          <div className="quarter-content call-handling-content">
+            {latestCall ? (
+              <div className={`call-status-card ${latestCall.status}`}>
+                <div className="call-status-top">
+                  <div>
+                    <span>Voice escalation</span>
+                    <strong>{callStatusLabel(latestCall)}</strong>
+                  </div>
+                  <em>{formatTime(latestCall.updatedAt)}</em>
+                </div>
+                <p className="call-status-summary">{callStatusDetail(latestCall)}</p>
+                <div className={`call-next-action ${latestCall.status}`}>
+                  <strong>{callNextAction(latestCall).title}</strong>
+                  <span>{callNextAction(latestCall).detail}</span>
+                </div>
+                {latestCall.status !== "acknowledged" ? (
+                  <ol className="call-stage-list" aria-label="Civil Protection call lifecycle">
+                    {callLifecycleStages(latestCall).map((stage) => (
+                      <li className={`call-stage ${stage.state}`} key={stage.id}>
+                        <span className="call-stage-dot" aria-hidden="true" />
+                        <div className="call-stage-body">
+                          <div className="call-stage-row">
+                            <strong>{stage.label}</strong>
+                            <span>{stage.timeLabel}</span>
+                          </div>
+                        </div>
+                      </li>
+                    ))}
+                  </ol>
+                ) : null}
+                {latestCall.transcriptSummary ? (
+                  <div className="call-transcript-summary">
+                    <span>Transcript summary</span>
+                    <p>{latestCall.transcriptSummary}</p>
+                  </div>
+                ) : null}
+              </div>
+            ) : (
+              <div className="empty-state compact-empty">No call activity</div>
+            )}
+          </div>
+        </section>
       </aside>
 
       <section className="timeline-panel">
