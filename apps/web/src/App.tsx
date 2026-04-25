@@ -114,7 +114,7 @@ const emptyPolygonCollection: FeatureCollection<Polygon> = {
   features: []
 };
 
-const scenarioSpeedOptions = [1, 10, 60, 120, 240, 480, 720, 1440] as const;
+const scenarioSpeedOptions = [1, 120, 480, 1440] as const;
 
 function apiUrl(path: string): string {
   return `${apiBaseUrl.replace(/\/$/, "")}${path}`;
@@ -1022,7 +1022,7 @@ export function App() {
               title="Advance scenario by 15 minutes"
             >
               <FastForward size={15} />
-              +15m
+              Skip
             </button>
             <button
               className="control-button icon-only"

@@ -205,10 +205,10 @@ h3 {
 
 .scenario-state {
   display: grid;
-  gap: 4px;
+  gap: 3px;
   border: 1px solid rgba(120, 113, 108, 0.28);
   border-radius: 8px;
-  padding: 8px 10px;
+  padding: 7px 9px;
   background: rgba(68, 64, 60, 0.38);
 }
 
@@ -223,7 +223,7 @@ dt {
 
 .scenario-state strong {
   color: #fde68a;
-  font-size: 1.45rem;
+  font-size: 1.28rem;
   line-height: 1;
 }
 
@@ -250,7 +250,7 @@ dt {
 
 .scenario-scale span {
   color: #a8a29e;
-  font-size: 0.62rem;
+  font-size: 0.58rem;
   font-weight: 800;
 }
 
@@ -263,36 +263,36 @@ dt {
 
 .scenario-meta span {
   color: #d6d3d1;
-  font-size: 0.66rem;
+  font-size: 0.6rem;
   font-weight: 850;
   text-transform: uppercase;
 }
 
 .scenario-controls {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 5px;
 }
 
 .control-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  min-height: 28px;
+  gap: 4px;
+  min-height: 26px;
   border: 1px solid rgba(120, 113, 108, 0.34);
   border-radius: 8px;
-  padding: 0 8px;
+  padding: 0 5px;
   background: rgba(41, 37, 36, 0.62);
   color: #d6d3d1;
-  font-size: 0.68rem;
+  font-size: 0.58rem;
   font-weight: 850;
   cursor: pointer;
 }
 
 .control-button svg {
-  width: 13px;
-  height: 13px;
+  width: 12px;
+  height: 12px;
 }
 
 .control-button:hover:not(:disabled) {
@@ -317,7 +317,6 @@ dt {
   min-height: 24px;
   border: 0;
   border-right: 1px solid rgba(120, 113, 108, 0.24);
-  border-bottom: 1px solid rgba(120, 113, 108, 0.24);
   background: rgba(41, 37, 36, 0.5);
   color: #a8a29e;
   font-size: 0.62rem;
@@ -325,13 +324,8 @@ dt {
   cursor: pointer;
 }
 
-.speed-control button:nth-child(4n),
 .speed-control button:last-child {
   border-right: 0;
-}
-
-.speed-control button:nth-last-child(-n + 4) {
-  border-bottom: 0;
 }
 
 .speed-control button.selected {
