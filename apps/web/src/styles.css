@@ -802,10 +802,10 @@ dd {
 
 .call-status-card {
   display: grid;
-  gap: 10px;
+  gap: 11px;
   border: 1px solid rgba(245, 158, 11, 0.32);
   border-radius: 8px;
-  padding: 11px;
+  padding: 12px;
   background: rgba(41, 37, 36, 0.72);
 }
 
@@ -821,9 +821,16 @@ dd {
 
 .call-status-top {
   display: flex;
-  align-items: baseline;
+  align-items: start;
   justify-content: space-between;
   gap: 10px;
+  min-width: 0;
+}
+
+.call-status-top > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
 }
 
 .call-status-top span {
@@ -839,6 +846,14 @@ dd {
   text-transform: uppercase;
 }
 
+.call-status-top em {
+  flex: 0 0 auto;
+  color: #a8a29e;
+  font-size: 0.7rem;
+  font-style: normal;
+  font-weight: 800;
+}
+
 .call-status-card.acknowledged .call-status-top strong {
   color: #bbf7d0;
 }
@@ -847,54 +862,161 @@ dd {
   color: #fecaca;
 }
 
-.call-status-card p {
+.call-status-summary,
+.call-stage p,
+.call-next-action span,
+.call-transcript-summary p {
   color: #d6d3d1;
   font-size: 0.76rem;
   line-height: 1.35;
 }
 
-.call-progress {
+.call-next-action {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  overflow: hidden;
-  border: 1px solid rgba(120, 113, 108, 0.3);
+  gap: 4px;
+  border: 1px solid rgba(245, 158, 11, 0.28);
   border-radius: 8px;
+  padding: 9px 10px;
+  background: rgba(120, 53, 15, 0.16);
 }
 
-.call-progress span {
-  min-height: 28px;
-  border-right: 1px solid rgba(120, 113, 108, 0.24);
-  padding: 7px 5px;
-  color: #78716c;
-  background: rgba(28, 25, 23, 0.64);
-  font-size: 0.66rem;
+.call-next-action strong {
+  color: #fde68a;
+  font-size: 0.74rem;
   font-weight: 900;
-  line-height: 1;
-  text-align: center;
   text-transform: uppercase;
 }
 
-.call-progress span:last-child {
-  border-right: 0;
+.call-next-action.acknowledged {
+  border-color: rgba(34, 197, 94, 0.35);
+  background: rgba(22, 101, 52, 0.18);
 }
 
-.call-progress .done {
-  color: #052e16;
+.call-next-action.acknowledged strong {
+  color: #bbf7d0;
+}
+
+.call-next-action.failed {
+  border-color: rgba(239, 68, 68, 0.4);
+  background: rgba(127, 29, 29, 0.18);
+}
+
+.call-next-action.failed strong {
+  color: #fecaca;
+}
+
+.call-stage-list {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.call-stage {
+  position: relative;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 8px;
+  min-width: 0;
+  padding: 0 0 12px;
+}
+
+.call-stage:last-child {
+  padding-bottom: 0;
+}
+
+.call-stage::before {
+  position: absolute;
+  top: 18px;
+  bottom: 0;
+  left: 7px;
+  width: 1px;
+  background: rgba(120, 113, 108, 0.35);
+  content: "";
+}
+
+.call-stage:last-child::before {
+  display: none;
+}
+
+.call-stage-dot {
+  z-index: 1;
+  display: block;
+  width: 15px;
+  height: 15px;
+  margin-top: 2px;
+  border: 2px solid rgba(120, 113, 108, 0.8);
+  border-radius: 999px;
+  background: #1c1917;
+}
+
+.call-stage.done .call-stage-dot {
+  border-color: #22c55e;
   background: #22c55e;
 }
 
-.call-progress .current {
-  color: #1c1917;
-  background: #f59e0b;
+.call-stage.current .call-stage-dot {
+  border-color: #f59e0b;
+  box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.16);
 }
 
-.call-progress .failed {
-  color: #fee2e2;
-  background: #991b1b;
+.call-stage.failed .call-stage-dot {
+  border-color: #ef4444;
+  background: #ef4444;
+}
+
+.call-stage-body {
+  min-width: 0;
+}
+
+.call-stage-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.call-stage-row strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #f5f5f4;
+  font-size: 0.77rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.call-stage-row span {
+  flex: 0 0 auto;
+  color: #a8a29e;
+  font-size: 0.68rem;
+  font-weight: 800;
+}
+
+.call-stage p {
+  display: -webkit-box;
+  overflow: hidden;
+  margin-top: 2px;
+  color: #a8a29e;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.call-stage.current .call-stage-row strong {
+  color: #fde68a;
+}
+
+.call-stage.done .call-stage-row strong {
+  color: #bbf7d0;
+}
+
+.call-stage.failed .call-stage-row strong {
+  color: #fecaca;
 }
 
 .call-meta {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -902,6 +1024,20 @@ dd {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.call-transcript-summary {
+  display: grid;
+  gap: 4px;
+  border-top: 1px solid rgba(120, 113, 108, 0.24);
+  padding-top: 9px;
+}
+
+.call-transcript-summary span {
+  color: #a8a29e;
+  font-size: 0.68rem;
+  font-weight: 850;
+  text-transform: uppercase;
 }
 
 .call-status-action {

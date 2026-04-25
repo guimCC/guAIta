@@ -8,10 +8,12 @@ import {
   SOCKET_EVENTS,
   TelemetryReadingInputSchema,
   type AcknowledgeCivilProtectionCallInput,
+  type CallStatus,
   type CivilProtectionCall,
   type DetectionEvent,
   type DetectionEventInput,
   type DetectionSource,
+  type Station,
   type TelemetryReading,
   type TelemetryReadingInput
 } from "@guaita/shared";
@@ -28,6 +30,9 @@ import { ScenarioEngine } from "./scenarios/scenario-engine.js";
 function isDuplicateEventError(error: unknown): boolean {
   return error instanceof Error && error.message.includes("UNIQUE constraint failed");
 }
+
+const ACTIVE_ESCALATION_CALL_STATUSES = new Set<CallStatus>(["requested", "calling", "completed"]);
+const REUSABLE_CALL_STATUSES = new Set<CallStatus>(["requested", "calling", "completed", "acknowledged"]);
 
 export async function buildServer() {
   const db = new GuaitaDatabase(config.databasePath);
@@ -176,56 +181,36 @@ export async function buildServer() {
       });
     }
 
-    let call = createCivilProtectionCallRecord(
+    const callResult = await startCivilProtectionCall({
       event,
       station,
       toNumber,
-      config.callsEnabled ? "elevenlabs" : "demo"
-    );
-    db.insertCall(call);
-    emitCallUpdated(io, call);
+      db,
+      io
+    });
 
-    if (!config.callsEnabled) {
+    if (callResult.failed) {
+      return reply.code(502).send({
+        ok: false,
+        error: "outbound_call_failed",
+        message: callResult.call.error,
+        call: callResult.call
+      });
+    }
+
+    if (!config.callsEnabled && !callResult.reused) {
       return reply.code(202).send({
         ok: true,
-        call,
+        call: callResult.call,
         message: "Call record stored. Set CALLS_ENABLED=true and ElevenLabs credentials to place the real outbound call."
       });
     }
 
-    try {
-      const outboundCall = await placeElevenLabsOutboundCall(call, event, station);
-      call = {
-        ...call,
-        status: "calling",
-        conversationId: outboundCall.conversationId,
-        callSid: outboundCall.callSid,
-        updatedAt: new Date().toISOString()
-      };
-      db.updateCall(call);
-      emitCallUpdated(io, call);
-
-      return reply.code(201).send({
-        ok: true,
-        call
-      });
-    } catch (error) {
-      call = {
-        ...call,
-        status: "failed",
-        error: error instanceof Error ? error.message : "Outbound call failed.",
-        updatedAt: new Date().toISOString()
-      };
-      db.updateCall(call);
-      emitCallUpdated(io, call);
-
-      return reply.code(502).send({
-        ok: false,
-        error: "outbound_call_failed",
-        message: call.error,
-        call
-      });
-    }
+    return reply.code(callResult.reused ? 200 : 201).send({
+      ok: true,
+      call: callResult.call,
+      message: callResult.message
+    });
   });
 
   app.post(
@@ -316,14 +301,16 @@ export async function buildServer() {
       }
 
       const completedAt = new Date().toISOString();
+      const status = call.status === "acknowledged" ? "acknowledged" : extracted.failed ? "failed" : "completed";
       const updatedCall: CivilProtectionCall = {
         ...call,
-        status: call.status === "acknowledged" ? "acknowledged" : extracted.failed ? "failed" : "completed",
+        status,
         conversationId: extracted.conversationId ?? call.conversationId,
         transcriptSummary: extracted.transcriptSummary ?? call.transcriptSummary,
         transcript: extracted.transcript ?? call.transcript,
         error: extracted.error ?? call.error,
         completedAt,
+        failedAt: status === "failed" ? completedAt : call.failedAt,
         updatedAt: completedAt
       };
 
@@ -407,10 +394,21 @@ export async function buildServer() {
       });
     }
 
-    return createDetection(request, reply, "device", db, io, (event) => {
-      if (event.source === "device" && scenarioEngine.getState().status === "running") {
+    if (hasActiveDeviceEscalation(db)) {
+      if (scenarioEngine.getState().status === "running") {
         scenarioEngine.pause();
       }
+
+      return reply.code(202).send({
+        ok: true,
+        ignored: true,
+        reason: "device_escalation_in_progress"
+      });
+    }
+
+    return createDetection(request, reply, "device", db, io, async (event) => {
+      pauseScenarioIfRunning(scenarioEngine);
+      return startCivilProtectionCallForDetection(event, db, io);
     });
   });
 
@@ -428,7 +426,10 @@ export async function buildServer() {
   });
 
   app.post("/api/manual/events", async (request, reply) => {
-    return createDetection(request, reply, "manual", db, io);
+    return createDetection(request, reply, "manual", db, io, async (event) => {
+      pauseScenarioIfRunning(scenarioEngine);
+      return startCivilProtectionCallForDetection(event, db, io);
+    });
   });
 
   return { app, db, io };
@@ -503,7 +504,7 @@ async function createDetection(
   expectedSource: DetectionSource,
   db: GuaitaDatabase,
   io: SocketServer,
-  onStored?: (event: DetectionEvent) => void
+  onStored?: (event: DetectionEvent) => Promise<Record<string, unknown> | undefined> | Record<string, unknown> | undefined
 ) {
   const parsed = DetectionEventInputSchema.safeParse(request.body);
 
@@ -527,13 +528,14 @@ async function createDetection(
 
   try {
     const { event, severity } = storeDetection(parsed.data, db, io);
-    onStored?.(event);
+    const storedResult = await onStored?.(event);
 
     return reply.code(201).send({
       ok: true,
       eventId: event.eventId,
       severity,
-      event
+      event,
+      ...storedResult
     });
   } catch (error) {
     if (isDuplicateEventError(error)) {
@@ -553,6 +555,160 @@ async function createDetection(
 
     throw error;
   }
+}
+
+function pauseScenarioIfRunning(scenarioEngine: ScenarioEngine): void {
+  if (scenarioEngine.getState().status === "running") {
+    scenarioEngine.pause();
+  }
+}
+
+async function startCivilProtectionCallForDetection(
+  event: DetectionEvent,
+  db: GuaitaDatabase,
+  io: SocketServer
+): Promise<Record<string, unknown> | undefined> {
+  const station = db.getStation(event.stationId);
+  const toNumber = config.civilProtectionDemoNumber;
+
+  if (!station || !toNumber) {
+    return undefined;
+  }
+
+  const callResult = await startCivilProtectionCall({
+    event,
+    station,
+    toNumber,
+    db,
+    io
+  });
+
+  return {
+    call: callResult.call,
+    callReused: callResult.reused,
+    callFailed: callResult.failed,
+    callMessage: callResult.message
+  };
+}
+
+async function startCivilProtectionCall({
+  event,
+  station,
+  toNumber,
+  db,
+  io
+}: {
+  event: DetectionEvent;
+  station: Station;
+  toNumber: string;
+  db: GuaitaDatabase;
+  io: SocketServer;
+}): Promise<{ call: CivilProtectionCall; reused: boolean; failed: boolean; message?: string }> {
+  const existingCall = db.getLatestCallForEvent(event.eventId);
+
+  if (existingCall && REUSABLE_CALL_STATUSES.has(existingCall.status)) {
+    return {
+      call: existingCall,
+      reused: true,
+      failed: false,
+      message: "A Civil Protection call already exists for this detection."
+    };
+  }
+
+  const activeCall = findActiveCivilProtectionCall(db);
+  if (activeCall) {
+    return {
+      call: activeCall,
+      reused: true,
+      failed: false,
+      message: "A Civil Protection call is already active."
+    };
+  }
+
+  let call = createCivilProtectionCallRecord(
+    event,
+    station,
+    toNumber,
+    config.callsEnabled ? "elevenlabs" : "demo"
+  );
+  db.insertCall(call);
+  emitCallUpdated(io, call);
+
+  if (!config.callsEnabled) {
+    return {
+      call,
+      reused: false,
+      failed: false
+    };
+  }
+
+  try {
+    const outboundCall = await placeElevenLabsOutboundCall(call, event, station);
+    const providerAcceptedAt = new Date().toISOString();
+    call = {
+      ...call,
+      status: "calling",
+      conversationId: outboundCall.conversationId,
+      callSid: outboundCall.callSid,
+      providerAcceptedAt,
+      updatedAt: providerAcceptedAt
+    };
+    db.updateCall(call);
+    emitCallUpdated(io, call);
+
+    return {
+      call,
+      reused: false,
+      failed: false
+    };
+  } catch (error) {
+    const failedAt = new Date().toISOString();
+    call = {
+      ...call,
+      status: "failed",
+      error: error instanceof Error ? error.message : "Outbound call failed.",
+      failedAt,
+      updatedAt: failedAt
+    };
+    db.updateCall(call);
+    emitCallUpdated(io, call);
+
+    return {
+      call,
+      reused: false,
+      failed: true
+    };
+  }
+}
+
+function findActiveCivilProtectionCall(db: GuaitaDatabase): CivilProtectionCall | undefined {
+  return latestCallsByEvent(db).find((call) => ACTIVE_ESCALATION_CALL_STATUSES.has(call.status));
+}
+
+function hasActiveDeviceEscalation(db: GuaitaDatabase): boolean {
+  return latestCallsByEvent(db).some((call) => {
+    if (!ACTIVE_ESCALATION_CALL_STATUSES.has(call.status)) {
+      return false;
+    }
+
+    return db.getEvent(call.eventId)?.source === "device";
+  });
+}
+
+function latestCallsByEvent(db: GuaitaDatabase): CivilProtectionCall[] {
+  const seenEventIds = new Set<string>();
+  const latestCalls: CivilProtectionCall[] = [];
+
+  for (const call of db.listCalls(50)) {
+    if (seenEventIds.has(call.eventId)) {
+      continue;
+    }
+
+    seenEventIds.add(call.eventId);
+    latestCalls.push(call);
+  }
+
+  return latestCalls;
 }
 
 function emitCallUpdated(io: SocketServer, call: CivilProtectionCall): void {

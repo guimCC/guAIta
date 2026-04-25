@@ -62,7 +62,7 @@ Scenario events use virtual time. Live device events use real time.
 
 If the scenario is running and the Arduino sends a detection, the backend stores and broadcasts the device event, then pauses the scenario clock so the live incident can be explained during the demo.
 
-If the scenario is paused and the Arduino sends a detection, the detection should still be accepted and shown as a live device event.
+If the scenario is paused and no device escalation is active, the Arduino detection should still be accepted and shown as a live device event. While a device-triggered Civil Protection call is `requested`, `calling`, or `completed`, additional device detections are ignored so the demo keeps one incident and one call record in focus.
 
 The current MVP scenario is a night-to-day patrol:
 

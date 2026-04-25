@@ -38,6 +38,15 @@ import { apiBaseUrl, getMapStyleUrl, mapInitialView, socketUrl } from "./mapConf
 import { PublicStatusPage } from "./PublicStatusPage";
 
 type ConnectionState = "connecting" | "connected" | "offline";
+type CallStageState = "done" | "current" | "pending" | "failed";
+
+interface CallStage {
+  id: string;
+  label: string;
+  state: CallStageState;
+  timeLabel: string;
+  detail: string;
+}
 
 const DEMO_DETECTION_STATION_ID = "collserola-control-02";
 const DETECTION_FLASH_TTL_MS = 6_500;
@@ -78,6 +87,7 @@ interface CreateEventResponse {
   ok: boolean;
   event?: DetectionEvent;
   eventId?: string;
+  call?: CivilProtectionCall;
   error?: string;
 }
 
@@ -148,6 +158,22 @@ function upsertCall(calls: CivilProtectionCall[], call: CivilProtectionCall): Ci
   return [call, ...calls.filter((existing) => existing.id !== call.id)].slice(0, 50);
 }
 
+function latestCallsByEvent(calls: CivilProtectionCall[]): CivilProtectionCall[] {
+  const eventIds = new Set<string>();
+  const latestCalls: CivilProtectionCall[] = [];
+
+  for (const call of calls) {
+    if (eventIds.has(call.eventId)) {
+      continue;
+    }
+
+    eventIds.add(call.eventId);
+    latestCalls.push(call);
+  }
+
+  return latestCalls;
+}
+
 function upsertTelemetry(readings: TelemetryReading[], reading: TelemetryReading): TelemetryReading[] {
   return [reading, ...readings.filter((existing) => existing.telemetryId !== reading.telemetryId)].slice(0, 200);
 }
@@ -195,16 +221,18 @@ function callStatusLabel(call: CivilProtectionCall | undefined): string {
 
   switch (call.status) {
     case "requested":
-      return "request stored";
+      return call.provider === "demo" ? "demo record stored" : "request queued";
     case "calling":
-      return "calling";
+      return "call in progress";
     case "acknowledged":
-      return "acknowledged";
+      return "response handled";
     case "completed":
-      return "call completed";
+      return "needs confirmation";
     case "failed":
       return "call failed";
   }
+
+  return "call status unknown";
 }
 
 function callStatusDetail(call: CivilProtectionCall): string {
@@ -222,29 +250,20 @@ function callStatusDetail(call: CivilProtectionCall): string {
 
   switch (call.status) {
     case "requested":
-      return "Call request stored locally.";
+      return call.provider === "demo"
+        ? "The escalation was stored in demo mode. Enable real calls to dial the configured recipient."
+        : "Waiting for ElevenLabs and Twilio to accept the outbound call request.";
     case "calling":
-      return "ElevenLabs accepted the outbound call request.";
+      return "Provider accepted the request. Waiting for the phone conversation to finish and report back.";
     case "completed":
-      return "Call ended. Waiting for explicit acknowledgement if not already handled.";
+      return "Call ended. Confirm the response once Civil Protection acknowledged the alert.";
     case "acknowledged":
       return "Civil Protection acknowledged the alert.";
     case "failed":
-      return "The outbound call did not complete.";
+      return "The outbound call did not complete. Retry or mark handled manually if the team confirmed outside the call.";
   }
-}
 
-function callProgress(call: CivilProtectionCall) {
-  const providerAccepted = Boolean(call.conversationId || call.callSid) || ["calling", "completed", "acknowledged"].includes(call.status);
-  const callClosed = Boolean(call.completedAt) || ["completed", "acknowledged", "failed"].includes(call.status);
-  const handled = call.status === "acknowledged";
-
-  return {
-    requested: "done",
-    providerAccepted: call.status === "failed" && !providerAccepted ? "failed" : providerAccepted ? "done" : "pending",
-    callClosed: call.status === "failed" ? "failed" : handled || callClosed ? "done" : providerAccepted ? "current" : "pending",
-    handled: handled ? "done" : callClosed ? "current" : "pending"
-  } as const;
+  return "Call status is being updated.";
 }
 
 function shortIdentifier(value: string | null | undefined): string {
@@ -253,6 +272,112 @@ function shortIdentifier(value: string | null | undefined): string {
   }
 
   return value.length <= 14 ? value : `${value.slice(0, 10)}...${value.slice(-4)}`;
+}
+
+function redactedPhone(value: string | undefined): string {
+  if (!value) {
+    return "configured recipient";
+  }
+
+  return value.length <= 7 ? value : `${value.slice(0, 4)}...${value.slice(-4)}`;
+}
+
+function timestampLabel(value: string | undefined): string {
+  return value ? formatTime(value) : "pending";
+}
+
+function hasProviderAccepted(call: CivilProtectionCall): boolean {
+  return Boolean(call.providerAcceptedAt || call.conversationId || call.callSid) ||
+    ["calling", "completed", "acknowledged"].includes(call.status);
+}
+
+function hasCallClosed(call: CivilProtectionCall): boolean {
+  return Boolean(call.completedAt) || ["completed", "acknowledged"].includes(call.status);
+}
+
+function callLifecycleStages(call: CivilProtectionCall): CallStage[] {
+  const providerAccepted = hasProviderAccepted(call);
+  const callClosed = hasCallClosed(call);
+  const failedBeforeProvider = call.status === "failed" && !providerAccepted;
+  const failedAfterProvider = call.status === "failed" && providerAccepted;
+  const providerDetail = providerAccepted
+    ? `Provider accepted${call.providerAcceptedAt ? "" : " before timestamp capture"}.`
+    : call.provider === "demo"
+      ? "Demo mode stored the escalation without dialing."
+      : "Waiting for ElevenLabs/Twilio acceptance.";
+  const conversationDetail = call.conversationId || call.callSid
+    ? `Conversation ${shortIdentifier(call.conversationId)} / SID ${shortIdentifier(call.callSid)}.`
+    : providerAccepted
+      ? "Phone leg active or awaiting post-call webhook."
+      : "No phone conversation has started yet.";
+
+  return [
+    {
+      id: "event",
+      label: "Incident locked",
+      state: "done",
+      timeLabel: timestampLabel(call.createdAt),
+      detail: `Event ${shortIdentifier(call.eventId)} is linked to this escalation.`
+    },
+    {
+      id: "provider",
+      label: "Provider accepted",
+      state: failedBeforeProvider ? "failed" : providerAccepted ? "done" : "current",
+      timeLabel: timestampLabel(call.providerAcceptedAt),
+      detail: providerDetail
+    },
+    {
+      id: "conversation",
+      label: "Conversation closed",
+      state: call.status === "failed" ? "failed" : callClosed ? "done" : providerAccepted ? "current" : "pending",
+      timeLabel: timestampLabel(call.completedAt ?? call.failedAt),
+      detail: failedAfterProvider ? call.error ?? "Call failed after provider acceptance." : conversationDetail
+    },
+    {
+      id: "handled",
+      label: "Response handled",
+      state: call.status === "acknowledged" ? "done" : call.status === "failed" ? "pending" : callClosed ? "current" : "pending",
+      timeLabel: timestampLabel(call.acknowledgedAt),
+      detail: call.acknowledgement ?? "Waiting for operator or ElevenLabs tool acknowledgement."
+    }
+  ];
+}
+
+function callNextAction(call: CivilProtectionCall): { title: string; detail: string } {
+  if (call.status === "failed") {
+    return {
+      title: "Retry available",
+      detail: call.error ?? "Check the provider setup, then retry the call from the dashboard."
+    };
+  }
+
+  if (call.status === "acknowledged") {
+    return {
+      title: "Ready to clear",
+      detail: "The response is confirmed. You can clear alert tracking for the next demo incident."
+    };
+  }
+
+  if (call.status === "completed") {
+    return {
+      title: "Confirm response",
+      detail: "The phone call ended. Mark handled once the recipient confirms they will check the area."
+    };
+  }
+
+  if (call.status === "calling") {
+    return {
+      title: "Waiting on call result",
+      detail: "Keep the call open until ElevenLabs posts completion or the tool acknowledges the alert."
+    };
+  }
+
+  return {
+    title: call.provider === "demo" ? "Demo mode" : "Waiting on provider",
+    detail: call.provider === "demo"
+      ? "No phone call was placed because real outbound calls are disabled."
+      : "ElevenLabs has not returned a conversation identifier yet."
+  };
 }
 
 function callTone(call: CivilProtectionCall | undefined, isHighConfidence: boolean): AlertTrackingItem["tone"] {
@@ -288,6 +413,50 @@ function isRiskControlStation(station: Pick<Station, "id" | "name">): boolean {
 
 function isDeviceStation(station: Pick<Station, "id" | "name">): boolean {
   return station.id === DEMO_DETECTION_STATION_ID || station.name === "Control Station 02";
+}
+
+function isEscalationEvent(event: DetectionEvent): boolean {
+  return event.source === "device" || event.source === "manual";
+}
+
+function isUnresolvedCall(call: CivilProtectionCall): boolean {
+  return call.status !== "acknowledged";
+}
+
+function canStartCivilProtectionCall(call: CivilProtectionCall | undefined): boolean {
+  return !call || call.status === "failed";
+}
+
+function civilProtectionButtonLabel(
+  call: CivilProtectionCall | undefined,
+  isCalling: boolean,
+  hasActiveAlert: boolean
+): string {
+  if (isCalling) {
+    return "Calling";
+  }
+
+  if (!hasActiveAlert) {
+    return "No active alert";
+  }
+
+  if (!call) {
+    return "Call Civil Protection";
+  }
+
+  if (call.status === "failed") {
+    return "Retry Civil Protection";
+  }
+
+  if (call.status === "acknowledged") {
+    return "Acknowledged";
+  }
+
+  if (call.status === "completed") {
+    return "Awaiting handled";
+  }
+
+  return "Call in progress";
 }
 
 function formatScenarioClock(scenarioState: ScenarioState | null): string {
@@ -336,32 +505,16 @@ function buildAlertTrackingItems(
   }
 
   const stationName = stationLabel(latestEvent.stationId, stationById);
-  const isHighConfidence = latestEvent.confidence >= 0.85;
+  const status = latestCall ? callStatusLabel(latestCall) : "ready to call";
 
   return [
     {
       id: `${latestEvent.eventId}-civil-protection`,
-      title: "Civil protection",
-      target: "Boundary access desk",
-      status: isHighConfidence ? callStatusLabel(latestCall) : "monitoring",
+      title: "Civil Protection",
+      target: latestEvent.source === "device" ? "Live device escalation" : "Manual Edge AI simulation",
+      status,
       detail: latestCall?.acknowledgement ?? `${stationName}, ${percent(latestEvent.confidence)} confidence`,
-      tone: callTone(latestCall, isHighConfidence)
-    },
-    {
-      id: `${latestEvent.eventId}-wildlife-response`,
-      title: "Wildlife response",
-      target: "Mobile field team",
-      status: "queued",
-      detail: latestEvent.direction ? `Movement ${latestEvent.direction}` : "Direction unknown",
-      tone: "queued"
-    },
-    {
-      id: `${latestEvent.eventId}-park-operations`,
-      title: "Park operations",
-      target: "Access control",
-      status: latestEvent.source === "device" ? "notify" : "review",
-      detail: latestEvent.source === "device" ? "Live device event" : "Manual demo event",
-      tone: latestEvent.source === "device" ? "active" : "queued"
+      tone: callTone(latestCall, true)
     }
   ];
 }
@@ -787,8 +940,20 @@ export function App() {
     return latest;
   }, [telemetryReadings]);
   const latestEvent = events[0];
-  const activeAlertEvent = latestEvent && !dismissedAlertEventIds.has(latestEvent.eventId) ? latestEvent : undefined;
-  const latestCall = latestCallForEvent(calls, activeAlertEvent?.eventId);
+  const currentCalls = useMemo(() => latestCallsByEvent(calls), [calls]);
+  const activeCall = useMemo(() => currentCalls.find(isUnresolvedCall), [currentCalls]);
+  const activeCallEvent = useMemo(
+    () => (activeCall ? events.find((event) => event.eventId === activeCall.eventId) : undefined),
+    [activeCall, events]
+  );
+  const latestEscalationEvent = useMemo(
+    () => events.find((event) => isEscalationEvent(event) && !dismissedAlertEventIds.has(event.eventId)),
+    [dismissedAlertEventIds, events]
+  );
+  const activeAlertEvent = activeCallEvent && !dismissedAlertEventIds.has(activeCallEvent.eventId)
+    ? activeCallEvent
+    : latestEscalationEvent;
+  const latestCall = latestCallForEvent(currentCalls, activeAlertEvent?.eventId);
   const activeStationCount = stations.filter((station) => station.status === "online").length;
   const telemetryStationCount = latestTelemetryByStation.size;
   const sortedStations = useMemo(() => {
@@ -812,6 +977,12 @@ export function App() {
   const alertTrackingItems = useMemo(
     () => buildAlertTrackingItems(activeAlertEvent, stationById, latestCall),
     [activeAlertEvent, latestCall, stationById]
+  );
+  const canCallCivilProtection = Boolean(activeAlertEvent) && canStartCivilProtectionCall(latestCall);
+  const civilProtectionCallLabel = civilProtectionButtonLabel(
+    latestCall,
+    isCallingCivilProtection,
+    Boolean(activeAlertEvent)
   );
 
   function setDeviceListening(nextValue: boolean, options?: { clearIgnoredEvents?: boolean }) {
@@ -999,6 +1170,9 @@ export function App() {
       if (connectionState !== "connected" && createdEvent) {
         setEvents((currentEvents) => upsertEvent(currentEvents, createdEvent));
       }
+      if (body.call) {
+        setCalls((currentCalls) => upsertCall(currentCalls, body.call as CivilProtectionCall));
+      }
     } catch (postError) {
       setError(postError instanceof Error ? postError.message : "Simulation failed.");
     } finally {
@@ -1009,6 +1183,11 @@ export function App() {
   async function callCivilProtection() {
     if (!activeAlertEvent) {
       setError("No active detection to escalate.");
+      return;
+    }
+
+    if (!canStartCivilProtectionCall(latestCall)) {
+      setError("Civil Protection is already being tracked for this alert.");
       return;
     }
 
@@ -1477,49 +1656,52 @@ export function App() {
             className="escalation-button"
             type="button"
             onClick={callCivilProtection}
-            disabled={
-              !activeAlertEvent ||
-              isCallingCivilProtection ||
-              latestCall?.status === "acknowledged"
-            }
+            disabled={!canCallCivilProtection || isCallingCivilProtection}
             title="Call the configured Civil Protection demo recipient"
           >
             <PhoneCall size={16} />
-            {isCallingCivilProtection
-              ? "Calling"
-              : latestCall?.status === "acknowledged"
-                ? "Acknowledged"
-                : latestCall
-                  ? "Retry Civil Protection"
-                : "Call Civil Protection"}
+            {civilProtectionCallLabel}
           </button>
           {latestCall ? (
             <div className={`call-status-card ${latestCall.status}`}>
               <div className="call-status-top">
-                <span>Voice escalation</span>
-                <strong>{callStatusLabel(latestCall)}</strong>
+                <div>
+                  <span>Voice escalation</span>
+                  <strong>{callStatusLabel(latestCall)}</strong>
+                </div>
+                <em>{formatTime(latestCall.updatedAt)}</em>
               </div>
-              <p>{callStatusDetail(latestCall)}</p>
-              <div className="call-progress" aria-label="Civil Protection call progress">
-                {[
-                  ["requested", "Requested"],
-                  ["providerAccepted", "Provider"],
-                  ["callClosed", "Call"],
-                  ["handled", "Handled"]
-                ].map(([step, label]) => (
-                  <span className={callProgress(latestCall)[step as keyof ReturnType<typeof callProgress>]} key={step}>
-                    {label}
-                  </span>
+              <p className="call-status-summary">{callStatusDetail(latestCall)}</p>
+              <div className={`call-next-action ${latestCall.status}`}>
+                <strong>{callNextAction(latestCall).title}</strong>
+                <span>{callNextAction(latestCall).detail}</span>
+              </div>
+              <ol className="call-stage-list" aria-label="Civil Protection call lifecycle">
+                {callLifecycleStages(latestCall).map((stage) => (
+                  <li className={`call-stage ${stage.state}`} key={stage.id}>
+                    <span className="call-stage-dot" aria-hidden="true" />
+                    <div className="call-stage-body">
+                      <div className="call-stage-row">
+                        <strong>{stage.label}</strong>
+                        <span>{stage.timeLabel}</span>
+                      </div>
+                      <p>{stage.detail}</p>
+                    </div>
+                  </li>
                 ))}
-              </div>
+              </ol>
               <dl className="call-meta">
                 <div>
-                  <dt>Created</dt>
-                  <dd>{formatTime(latestCall.createdAt)}</dd>
+                  <dt>Provider</dt>
+                  <dd>{latestCall.provider}</dd>
                 </div>
                 <div>
-                  <dt>Updated</dt>
-                  <dd>{formatTime(latestCall.updatedAt)}</dd>
+                  <dt>Recipient</dt>
+                  <dd>{redactedPhone(latestCall.toNumber)}</dd>
+                </div>
+                <div>
+                  <dt>Incident</dt>
+                  <dd>{shortIdentifier(latestCall.eventId)}</dd>
                 </div>
                 <div>
                   <dt>Conversation</dt>
@@ -1529,7 +1711,17 @@ export function App() {
                   <dt>Call SID</dt>
                   <dd>{shortIdentifier(latestCall.callSid)}</dd>
                 </div>
+                <div>
+                  <dt>Created</dt>
+                  <dd>{formatTime(latestCall.createdAt)}</dd>
+                </div>
               </dl>
+              {latestCall.transcriptSummary ? (
+                <div className="call-transcript-summary">
+                  <span>Transcript summary</span>
+                  <p>{latestCall.transcriptSummary}</p>
+                </div>
+              ) : null}
               {latestCall.status !== "acknowledged" ? (
                 <button
                   className="quiet-button call-status-action"
@@ -1539,7 +1731,11 @@ export function App() {
                   title="Mark Civil Protection response as handled in the dashboard"
                 >
                   <CheckCircle2 size={14} />
-                  {isMarkingCallHandled ? "Marking" : "Mark handled"}
+                  {isMarkingCallHandled
+                    ? "Marking"
+                    : latestCall.status === "failed"
+                      ? "Mark handled manually"
+                      : "Mark handled"}
                 </button>
               ) : null}
             </div>
