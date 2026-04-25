@@ -45,7 +45,6 @@ interface CallStage {
   label: string;
   state: CallStageState;
   timeLabel: string;
-  detail: string;
 }
 
 const DEMO_DETECTION_STATION_ID = "collserola-control-02";
@@ -265,7 +264,7 @@ function callStatusDetail(call: CivilProtectionCall): string {
   switch (call.status) {
     case "requested":
       return call.provider === "demo"
-        ? "The escalation was stored in demo mode. Enable real calls to dial the configured recipient."
+        ? "Demo record saved. Real dialing is disabled."
         : "Waiting for ElevenLabs and Twilio to accept the outbound call request.";
     case "calling":
       return "Provider accepted the request. Waiting for the phone conversation to finish and report back.";
@@ -310,49 +309,58 @@ function hasCallClosed(call: CivilProtectionCall): boolean {
 }
 
 function callLifecycleStages(call: CivilProtectionCall): CallStage[] {
+  const isDemo = call.provider === "demo";
   const providerAccepted = hasProviderAccepted(call);
   const callClosed = hasCallClosed(call);
   const failedBeforeProvider = call.status === "failed" && !providerAccepted;
-  const failedAfterProvider = call.status === "failed" && providerAccepted;
-  const providerDetail = providerAccepted
-    ? `Provider accepted${call.providerAcceptedAt ? "" : " before timestamp capture"}.`
-    : call.provider === "demo"
-      ? "Demo mode stored the escalation without dialing."
-      : "Waiting for ElevenLabs/Twilio acceptance.";
-  const conversationDetail = call.conversationId || call.callSid
-    ? `Conversation ${shortIdentifier(call.conversationId)} / SID ${shortIdentifier(call.callSid)}.`
-    : providerAccepted
-      ? "Phone leg active or awaiting post-call webhook."
-      : "No phone conversation has started yet.";
+
+  if (isDemo) {
+    return [
+      {
+        id: "event",
+        label: "Incident logged",
+        state: "done",
+        timeLabel: timestampLabel(call.createdAt)
+      },
+      {
+        id: "conversation",
+        label: "Phone call skipped",
+        state: "pending",
+        timeLabel: "skipped"
+      },
+      {
+        id: "handled",
+        label: "Response handled",
+        state: call.status === "acknowledged" ? "done" : "pending",
+        timeLabel: timestampLabel(call.acknowledgedAt)
+      }
+    ];
+  }
 
   return [
     {
       id: "event",
       label: "Incident locked",
       state: "done",
-      timeLabel: timestampLabel(call.createdAt),
-      detail: `Event ${shortIdentifier(call.eventId)} is linked to this escalation.`
+      timeLabel: timestampLabel(call.createdAt)
     },
     {
       id: "provider",
       label: "Provider accepted",
       state: failedBeforeProvider ? "failed" : providerAccepted ? "done" : "current",
-      timeLabel: timestampLabel(call.providerAcceptedAt),
-      detail: providerDetail
+      timeLabel: timestampLabel(call.providerAcceptedAt)
     },
     {
       id: "conversation",
       label: "Conversation closed",
       state: call.status === "failed" ? "failed" : callClosed ? "done" : providerAccepted ? "current" : "pending",
-      timeLabel: timestampLabel(call.completedAt ?? call.failedAt),
-      detail: failedAfterProvider ? call.error ?? "Call failed after provider acceptance." : conversationDetail
+      timeLabel: timestampLabel(call.completedAt ?? call.failedAt)
     },
     {
       id: "handled",
       label: "Response handled",
       state: call.status === "acknowledged" ? "done" : call.status === "failed" ? "pending" : callClosed ? "current" : "pending",
-      timeLabel: timestampLabel(call.acknowledgedAt),
-      detail: call.acknowledgement ?? "Waiting for operator or ElevenLabs tool acknowledgement."
+      timeLabel: timestampLabel(call.acknowledgedAt)
     }
   ];
 }
@@ -389,9 +397,28 @@ function callNextAction(call: CivilProtectionCall): { title: string; detail: str
   return {
     title: call.provider === "demo" ? "Demo mode" : "Waiting on provider",
     detail: call.provider === "demo"
-      ? "No phone call was placed because real outbound calls are disabled."
+      ? "Outbound dialing disabled."
       : "ElevenLabs has not returned a conversation identifier yet."
   };
+}
+
+function callMetaItems(call: CivilProtectionCall): Array<{ label: string; value: string }> {
+  const items = [
+    { label: "Provider", value: call.provider },
+    { label: "Recipient", value: redactedPhone(call.toNumber) },
+    { label: "Incident", value: shortIdentifier(call.eventId) },
+    { label: "Created", value: formatTime(call.createdAt) }
+  ];
+
+  if (call.conversationId) {
+    items.push({ label: "Conversation", value: shortIdentifier(call.conversationId) });
+  }
+
+  if (call.callSid) {
+    items.push({ label: "Call SID", value: shortIdentifier(call.callSid) });
+  }
+
+  return items;
 }
 
 function callTone(call: CivilProtectionCall | undefined, isHighConfidence: boolean): AlertTrackingItem["tone"] {
@@ -1763,36 +1790,17 @@ export function App() {
                         <strong>{stage.label}</strong>
                         <span>{stage.timeLabel}</span>
                       </div>
-                      <p>{stage.detail}</p>
                     </div>
                   </li>
                 ))}
               </ol>
               <dl className="call-meta">
-                <div>
-                  <dt>Provider</dt>
-                  <dd>{latestCall.provider}</dd>
-                </div>
-                <div>
-                  <dt>Recipient</dt>
-                  <dd>{redactedPhone(latestCall.toNumber)}</dd>
-                </div>
-                <div>
-                  <dt>Incident</dt>
-                  <dd>{shortIdentifier(latestCall.eventId)}</dd>
-                </div>
-                <div>
-                  <dt>Conversation</dt>
-                  <dd>{shortIdentifier(latestCall.conversationId)}</dd>
-                </div>
-                <div>
-                  <dt>Call SID</dt>
-                  <dd>{shortIdentifier(latestCall.callSid)}</dd>
-                </div>
-                <div>
-                  <dt>Created</dt>
-                  <dd>{formatTime(latestCall.createdAt)}</dd>
-                </div>
+                {callMetaItems(latestCall).map((item) => (
+                  <div key={item.label}>
+                    <dt>{item.label}</dt>
+                    <dd>{item.value}</dd>
+                  </div>
+                ))}
               </dl>
               {latestCall.transcriptSummary ? (
                 <div className="call-transcript-summary">
