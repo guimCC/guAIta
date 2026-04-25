@@ -13,12 +13,21 @@ from arduino.app_bricks.video_objectdetection import VideoObjectDetection
 # --- Device contract config ---
 SERVER_URL = "https://uncordial-mathias-infirmly.ngrok-free.dev"
 DEVICE_TOKEN = "demo-device-token"
-STATION_ID = "live-device-01"
+STATION_ID = "collserola-control-02"
 
 HEADERS = {
     "Authorization": f"Bearer {DEVICE_TOKEN}",
     "Content-Type": "application/json",
 }
+
+# --- Detection thresholds ---
+CONFIDENCE_THR = 0.7
+THR_FRAMES = 10
+
+# --- Detection window state ---
+confidence_window = []
+last_frame = None
+last_detections = None
 
 # --- State ---
 active = False
@@ -46,7 +55,7 @@ def _safe_float(value):
     except Exception:
         return None
 
-def post_detection(confidence: float, frame: bytes = None, detections: dict = None):
+def post_detection(best_confidence: float, frame: bytes = None, detections: dict = None):
     snapshot = None
     if frame is not None and detections is not None:
         try:
@@ -67,7 +76,7 @@ def post_detection(confidence: float, frame: bytes = None, detections: dict = No
                 "stationId": STATION_ID,
                 "source": "device",
                 "species": "wild_boar",
-                "confidence": confidence,
+                "confidence": best_confidence,
                 "observedAt": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
                 "temperatureC": _safe_float(latest_metrics["temperatureC"]),
                 "humidityPct": _safe_float(latest_metrics["humidityPct"]),
@@ -143,8 +152,8 @@ def loop():
 
     time.sleep(0.1 if camera_is_working else 1.0)
 
-def on_all_detections(detections: dict, frame: bytes):  # frame available via camera_preview=True
-    global camera_is_working
+def on_all_detections(detections: dict, frame: bytes):
+    global camera_is_working, confidence_window, last_frame, last_detections
     camera_is_working = True
 
     for key, values in detections.items():
@@ -155,17 +164,38 @@ def on_all_detections(detections: dict, frame: bytes):  # frame available via ca
                 "timestamp": datetime.now(UTC).isoformat(),
             })
 
-        if key == "0" and active:
-            best_confidence = values[0].get("confidence")
+    if not active:
+        return
+
+    # SLIDING WINDOW CONFIDENCE EVALUATION
+    # 0 is the class ID for "wild_boar" in our model
+    confidence = detections["0"][0].get("confidence") if "0" in detections else 0.0
+    confidence_window.append(confidence)
+
+    # Keep as a sliding window of fixed size
+    if len(confidence_window) > THR_FRAMES:
+        confidence_window.pop(0)
+
+    # Only evaluate once the window is full
+    if len(confidence_window) == THR_FRAMES:
+        avg = sum(confidence_window) / THR_FRAMES
+        if avg >= CONFIDENCE_THR:
+            print(f"[detection] window avg={avg:.2f} — firing")
             ui.send_message("boar_detected", {
-                "confidence": best_confidence,
+                "confidence": avg,
                 "timestamp": datetime.now(UTC).isoformat(),
                 **latest_metrics,
             })
-            post_detection(best_confidence, frame, detections)
+            post_detection(avg, last_frame, last_detections)
+            confidence_window.clear()
+
+    if "0" in detections:
+        last_frame = frame
+        last_detections = detections
+
 
 ui = WebUI()
-detector = VideoObjectDetection(confidence=0.5, debounce_sec=1.5, camera_preview=True)
+detector = VideoObjectDetection(confidence=0.0, debounce_sec=0.0, camera_preview=True)
 detector.on_detect_all(on_all_detections)
 ui.on_message("override_th", lambda sid, threshold: detector.override_threshold(threshold))
 
