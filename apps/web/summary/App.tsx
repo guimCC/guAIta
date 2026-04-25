@@ -63,7 +63,54 @@ function SummaryMap({ stations, events }: { stations: Station[], events: Detecti
     });
 
     map.on("load", () => {
-      // 1. Stations Layer (Matching Dashboard Colors)
+      // 1. Heat Detections Layer (True Heatmap)
+      map.addSource("events", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+      map.addLayer({
+        id: "events-heatmap",
+        type: "heatmap",
+        source: "events",
+        maxzoom: 15,
+        paint: {
+          // Increase the heatmap weight based on frequency and property 'count'
+          "heatmap-weight": ["interpolate", ["linear"], ["get", "count"], 0, 0, 10, 1],
+          // Increase the heatmap color weight weight by zoom level
+          // heatmap-intensity is a multiplier on top of heatmap-weight
+          "heatmap-intensity": ["interpolate", ["linear"], ["zoom"], 0, 1, 15, 3],
+          // Color ramp for heatmap
+          "heatmap-color": [
+            "interpolate",
+            ["linear"],
+            ["heatmap-density"],
+            0, "rgba(33,102,172,0)",
+            0.2, "rgb(103,169,207)",
+            0.4, "rgb(209,229,240)",
+            0.6, "rgb(253,219,199)",
+            0.8, "rgb(239,138,98)",
+            1, "rgb(178,24,43)"
+          ],
+          // Adjust the heatmap radius by zoom level
+          "heatmap-radius": ["interpolate", ["linear"], ["zoom"], 0, 2, 15, 20],
+          // Transition from heatmap to circle layer by zoom level
+          "heatmap-opacity": ["interpolate", ["linear"], ["zoom"], 7, 1, 15, 0.5]
+        }
+      });
+
+      // Add a circle layer for events at high zoom
+      map.addLayer({
+        id: "events-point",
+        type: "circle",
+        source: "events",
+        minzoom: 13,
+        paint: {
+          "circle-radius": ["interpolate", ["linear"], ["zoom"], 13, 3, 15, 8],
+          "circle-color": "rgb(178,24,43)",
+          "circle-stroke-color": "white",
+          "circle-stroke-width": 1,
+          "circle-opacity": ["interpolate", ["linear"], ["zoom"], 13, 0, 15, 1]
+        }
+      });
+
+      // 2. Stations Layer (Matching Dashboard Colors)
       map.addSource("stations", { 
         type: "geojson", 
         data: { type: "FeatureCollection", features: stations.map(s => ({
@@ -81,30 +128,6 @@ function SummaryMap({ stations, events }: { stations: Station[], events: Detecti
           "circle-radius": 6,
           "circle-stroke-color": "#1c1917",
           "circle-stroke-width": 2
-        }
-      });
-
-      // 2. Heat Detections Layer (Pulses)
-      map.addSource("events", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
-      map.addLayer({
-        id: "event-pulses",
-        type: "circle",
-        source: "events",
-        paint: {
-          "circle-color": "#f59e0b",
-          "circle-opacity": 0.25,
-          "circle-radius": ["interpolate", ["linear"], ["get", "count"], 1, 15, 10, 35]
-        }
-      });
-      map.addLayer({
-        id: "event-dots",
-        type: "circle",
-        source: "events",
-        paint: {
-          "circle-color": "#fde68a",
-          "circle-radius": 4,
-          "circle-stroke-color": "#7f1d1d",
-          "circle-stroke-width": 1.5
         }
       });
     });

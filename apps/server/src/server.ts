@@ -1,6 +1,7 @@
 import cors from "@fastify/cors";
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import { Server as SocketServer } from "socket.io";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import {
   AcknowledgeCivilProtectionCallInputSchema,
   StartCivilProtectionCallInputSchema,
@@ -476,11 +477,13 @@ export async function buildServer() {
     const riskLevel = daylightPct > 15 ? "CRITICAL" : "MODERATE";
 
     // ----------------------------------------------------------------------
-    // PREPARED GEMMA 4 PROMPT (For future integration)
+    // GEMMA / GEMINI AI PROMPT
     // ----------------------------------------------------------------------
     const gemmaPrompt = `
       System: You are an expert Veterinary Epidemiologist specializing in African Swine Fever (ASF).
       Your task is to analyze sensor data from the Collserola Park and provide a concise operational report.
+      IMPORTANT: Do not output any thinking processes, internal thoughts, or <think> tags. Just output the final report.
+      Make the report extremely short: exactly 3 principal bullet points and nothing else.
 
       Data:
       - Total Encounters (48h): ${events.reduce((acc, e) => acc + e.count, 0)}
@@ -489,20 +492,31 @@ export async function buildServer() {
       - Thermal Distribution: North (Cold/Shadow): ${northActivity}, South (Exposed/Hot): ${southActivity}
       - Urban Pressure: ${towardsCityCount} boars moving towards the city grid.
 
-      Format the response as:
+      Format the response EXACTLY like this (only the 3 bullet points):
       ### VETERINARY EPIDEMIOLOGICAL REPORT: African Swine Fever (ASF) Risk
       **Status:** [CRITICAL or MODERATE] - Monitoring active across ${stations.length} stations.
       
-      **1. Behavioral Anomalies:** ...
-      **2. Environmental Correlation:** ...
-      **3. Urban Pressure & Containment:** ...
-      **Expert Recommendation:** ...
+      * **Behavioral Anomalies:** [1 short sentence]
+      * **Environmental Correlation:** [1 short sentence]
+      * **Urban Pressure & Containment:** [1 short sentence]
     `;
 
-    console.log("[GEMMA 4 PROMPT READY]:\n", gemmaPrompt);
+    console.log("[AI PROMPT READY]:\n", gemmaPrompt);
 
-    // MOCKED GEMMA 4 RESPONSE (Until API is connected)
-    const analysisText = `
+    let analysisText = "";
+
+    try {
+      if (config.geminiApiKey) {
+        const genAI = new GoogleGenerativeAI(config.geminiApiKey);
+        // We use gemma-4-31b-it for the "Gemma 4" capabilities
+        const model = genAI.getGenerativeModel({ model: "gemma-4-31b-it" }); 
+        const result = await model.generateContent(gemmaPrompt);
+        analysisText = result.response.text();
+        // Remove <think>...</think> blocks if any
+        analysisText = analysisText.replace(/<think>[\s\S]*?<\/think>\n?/g, '').trim();
+      } else {
+        // MOCKED RESPONSE (Fallback if API key is missing)
+        analysisText = `
 ### VETERINARY EPIDEMIOLOGICAL REPORT: African Swine Fever (ASF) Risk
 **Status:** ${riskLevel} - Monitoring active across ${stations.length} stations.
 
@@ -517,7 +531,12 @@ A total of **${towardsCityCount} detections** show movement **towards the urban 
 
 **Expert Recommendation:**
 Immediate deployment of "Rural Agents" to the northern perimeter of **${topStation?.name}**. Focus on areas with high humidity. Any individual seen during daylight hours should be considered infected and handled under strict biocontainment protocols.
-    `;
+        `;
+      }
+    } catch (e) {
+      app.log.error(e, "Error generating AI summary");
+      analysisText = `**Error:** Failed to generate analysis from AI model. Please check the server logs and API key configuration.`;
+    }
 
     return {
       ok: true,

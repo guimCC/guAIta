@@ -42,7 +42,8 @@ const placeholderValues = new Set([
   "replace_with_elevenlabs_agent_id",
   "replace_with_elevenlabs_phone_number_id",
   "replace_with_demo_recipient_number",
-  "replace_with_webhook_token"
+  "replace_with_webhook_token",
+  "replace_with_gemini_api_key"
 ]);
 
 function cleanEnv(name: string): string | undefined {
@@ -138,6 +139,7 @@ export const config = {
   elevenLabsAgentId: cleanEnv("ELEVENLABS_AGENT_ID"),
   elevenLabsPhoneNumberId: cleanEnv("ELEVENLABS_AGENT_PHONE_NUMBER_ID"),
   elevenLabsWebhookToken: cleanEnv("ELEVENLABS_WEBHOOK_TOKEN"),
+  geminiApiKey: cleanEnv("GEMINI_API_KEY"),
   corsOrigins: corsOrigins(),
   corsOrigin
 };
