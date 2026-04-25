@@ -23,6 +23,7 @@ float get_humidity() {
 }
 
 float get_light() {
+    light.update();
     return light.getLux();
 }
 
@@ -30,9 +31,6 @@ float get_distance() {
     return distance.get();
 }
 
-bool get_movement() {
-    return movement.update() != 0;
-}
 
 void setup() {
     pinMode(LED_BUILTIN, OUTPUT);
@@ -47,7 +45,6 @@ void setup() {
     Bridge.provide("get_humidity", get_humidity);
     Bridge.provide("get_light", get_light);
     Bridge.provide("get_distance", get_distance);
-    Bridge.provide("get_movement", get_movement);
 }
 
 void loop() {

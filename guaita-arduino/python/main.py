@@ -29,7 +29,6 @@ latest_metrics = {
     "humidityPct": None,
     "lightLux": None,
     "distanceMm": None,
-    "movementDetected": None,
 }
 
 def _safe_float(value):
@@ -40,7 +39,7 @@ def _safe_float(value):
     except Exception:
         return None
 
-def post_detection(confidence: float):
+def post_detection(confidence: float, bounding_box_xyxy: tuple[int] = None):
     try:
         r = requests.post(
             f"{SERVER_URL}/api/device/events",
@@ -49,12 +48,12 @@ def post_detection(confidence: float):
                 "source": "device",
                 "species": "wild_boar",
                 "confidence": confidence,
+                "bounding_box_xyxy": bounding_box_xyxy,
                 "observedAt": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
                 "temperatureC": _safe_float(latest_metrics["temperatureC"]),
                 "humidityPct": _safe_float(latest_metrics["humidityPct"]),
                 "lightLux": _safe_float(latest_metrics["lightLux"]),
                 "distanceMm": _safe_float(latest_metrics["distanceMm"]),
-                "movementDetected": latest_metrics["movementDetected"],
                 "model": {"name": "wild-boar-detector", "version": "demo-v1"},
             },
             headers=HEADERS,
@@ -76,7 +75,6 @@ def post_telemetry():
                 "humidityPct": _safe_float(latest_metrics["humidityPct"]),
                 "lightLux": _safe_float(latest_metrics["lightLux"]),
                 "distanceMm": _safe_float(latest_metrics["distanceMm"]),
-                "movementDetected": latest_metrics["movementDetected"],
             },
             headers=HEADERS,
             timeout=5,
@@ -106,7 +104,6 @@ def loop():
     _bridge_get("humidityPct", "get_humidity")
     _bridge_get("lightLux", "get_light")
     _bridge_get("distanceMm", "get_distance")
-    _bridge_get("movementDetected", "get_movement")
 
     print(f"[metrics] {latest_metrics}")
 
@@ -132,12 +129,14 @@ def on_all_detections(detections: dict):
 
         if key == "0":  # label "0" = wild_boar (as trained in the model)
             best_confidence = values[0].get("confidence")
+            bounding_box_xyxy = values[0].get("bounding_box_xyxy")
             ui.send_message("boar_detected", {
                 "confidence": best_confidence,
                 "timestamp": datetime.now(UTC).isoformat(),
+                "bounding_box_xyxy": bounding_box_xyxy,
                 **latest_metrics,
             })
-            post_detection(best_confidence)
+            post_detection(best_confidence, bounding_box_xyxy)
 
 
 ui = WebUI()
