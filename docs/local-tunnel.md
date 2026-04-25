@@ -12,6 +12,12 @@ Use ngrok with a static/free dev domain when available.
 ngrok http --url=https://your-static-domain.ngrok-free.app 3000
 ```
 
+For the current guAIta static dev domain:
+
+```bash
+ngrok http --url=https://uncordial-mathias-infirmly.ngrok-free.dev 3000
+```
+
 Depending on the installed ngrok version, the equivalent flag may be:
 
 ```bash
@@ -24,7 +30,7 @@ The device sender should read the server URL from config:
 
 ```json
 {
-  "serverUrl": "https://your-static-domain.ngrok-free.app",
+  "serverUrl": "https://uncordial-mathias-infirmly.ngrok-free.dev",
   "deviceToken": "demo-device-token",
   "stationId": "live-device-01"
 }
