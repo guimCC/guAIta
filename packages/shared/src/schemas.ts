@@ -87,7 +87,7 @@ export const LiveStreamFrameSchema = z
     capturedAt: z.string().datetime(),
     receivedAt: z.string().datetime(),
     contentType: z.enum(["image/jpeg"]),
-    dataUrl: z.string().min(1),
+    dataUrl: z.string().min(1).optional(),
     boundingBoxesEnabled: z.boolean(),
     frameWidth: z.number().int().positive().optional(),
     frameHeight: z.number().int().positive().optional(),

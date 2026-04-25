@@ -169,6 +169,10 @@ interface DetectionNotice {
   receivedAtMs: number;
 }
 
+type LiveStreamFramePacket = LiveStreamFrame & {
+  imageBytes?: ArrayBuffer | Uint8Array | number[];
+};
+
 const emptyPointCollection: FeatureCollection<Point> = {
   type: "FeatureCollection",
   features: []
@@ -260,6 +264,47 @@ function upsertStreamFrame(frames: Map<string, LiveStreamFrame>, frame: LiveStre
   const nextFrames = new Map(frames);
   nextFrames.set(frame.stationId, frame);
   return nextFrames;
+}
+
+function revokeFrameUrl(value: string | undefined): void {
+  if (value?.startsWith("blob:")) {
+    URL.revokeObjectURL(value);
+  }
+}
+
+function bytesToUint8Array(value: LiveStreamFramePacket["imageBytes"]): Uint8Array | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  if (value instanceof Uint8Array) {
+    return value;
+  }
+
+  if (value instanceof ArrayBuffer) {
+    return new Uint8Array(value);
+  }
+
+  if (Array.isArray(value)) {
+    return new Uint8Array(value);
+  }
+
+  return undefined;
+}
+
+function liveStreamFrameImageUrl(frame: LiveStreamFramePacket): string | undefined {
+  if (frame.dataUrl) {
+    return frame.dataUrl;
+  }
+
+  const bytes = bytesToUint8Array(frame.imageBytes);
+  if (!bytes) {
+    return undefined;
+  }
+
+  const buffer = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(buffer).set(bytes);
+  return URL.createObjectURL(new Blob([buffer], { type: frame.contentType }));
 }
 
 function formatTime(value: string): string {
@@ -1178,6 +1223,7 @@ function LiveStreamViewer({
   station,
   session,
   frame,
+  imageUrl,
   nowMs,
   error,
   onClose
@@ -1185,6 +1231,7 @@ function LiveStreamViewer({
   station: Station | undefined;
   session: LiveStreamSession | undefined;
   frame: LiveStreamFrame | undefined;
+  imageUrl: string | undefined;
   nowMs: number;
   error: string | null;
   onClose: () => void;
@@ -1211,9 +1258,9 @@ function LiveStreamViewer({
       </header>
 
       <div className="live-frame-stage">
-        {frame ? (
+        {frame && imageUrl ? (
           <>
-            <img src={frame.dataUrl} alt={`Latest camera frame from ${stationName}`} />
+            <img src={imageUrl} alt={`Latest camera frame from ${stationName}`} />
             {boxes.length ? (
               <div className="live-box-overlay" aria-hidden="true">
                 {boxes.map((box, index) => (
@@ -1462,6 +1509,7 @@ export function App() {
   const [activeStreamStationId, setActiveStreamStationId] = useState<string | null>(null);
   const [streamSessions, setStreamSessions] = useState<Map<string, LiveStreamSession>>(() => new Map());
   const [streamFrames, setStreamFrames] = useState<Map<string, LiveStreamFrame>>(() => new Map());
+  const [streamFrameUrls, setStreamFrameUrls] = useState<Map<string, string>>(() => new Map());
   const [streamError, setStreamError] = useState<string | null>(null);
   const [streamNowMs, setStreamNowMs] = useState(() => Date.now());
   const [snapshotModalEvent, setSnapshotModalEvent] = useState<DetectionEvent | null>(null);
@@ -1472,6 +1520,7 @@ export function App() {
   const listenFromDeviceRef = useRef(false);
   const ignoredDeviceEventIdsRef = useRef<Set<string>>(new Set());
   const activeStreamStationIdRef = useRef<string | null>(null);
+  const streamFrameUrlsRef = useRef<Map<string, string>>(new Map());
 
   const stationById = useMemo(() => new Map(stations.map((station) => [station.id, station])), [stations]);
   const latestTelemetryByStation = useMemo(() => {
@@ -1539,6 +1588,7 @@ export function App() {
   const activeStreamStation = activeStreamStationId ? stationById.get(activeStreamStationId) : undefined;
   const activeStreamSession = activeStreamStationId ? streamSessions.get(activeStreamStationId) : undefined;
   const activeStreamFrame = activeStreamStationId ? streamFrames.get(activeStreamStationId) : undefined;
+  const activeStreamFrameUrl = activeStreamStationId ? streamFrameUrls.get(activeStreamStationId) : undefined;
 
   function applyDeviceListeningState(nextValue: boolean, options?: { clearIgnoredEvents?: boolean }) {
     listenFromDeviceRef.current = nextValue;
@@ -1612,6 +1662,17 @@ export function App() {
     setStreamError(null);
 
     if (stationId) {
+      setStreamFrameUrls((currentUrls) => {
+        const nextUrls = new Map(currentUrls);
+        revokeFrameUrl(nextUrls.get(stationId));
+        nextUrls.delete(stationId);
+        return nextUrls;
+      });
+      setStreamFrames((currentFrames) => {
+        const nextFrames = new Map(currentFrames);
+        nextFrames.delete(stationId);
+        return nextFrames;
+      });
       void stopLiveStream(stationId);
     }
   }
@@ -1748,7 +1809,17 @@ export function App() {
     socket.on(SOCKET_EVENTS.streamSessionUpdated, (session: LiveStreamSession) => {
       setStreamSessions((currentSessions) => upsertStreamSession(currentSessions, session));
     });
-    socket.on(SOCKET_EVENTS.streamFrame, (frame: LiveStreamFrame) => {
+    socket.on(SOCKET_EVENTS.streamFrame, (frame: LiveStreamFramePacket) => {
+      const nextFrameUrl = liveStreamFrameImageUrl(frame);
+      if (nextFrameUrl) {
+        setStreamFrameUrls((currentUrls) => {
+          const nextUrls = new Map(currentUrls);
+          revokeFrameUrl(nextUrls.get(frame.stationId));
+          nextUrls.set(frame.stationId, nextFrameUrl);
+          return nextUrls;
+        });
+      }
+
       setStreamFrames((currentFrames) => upsertStreamFrame(currentFrames, frame));
       setStreamNowMs(Date.now());
     });
@@ -1803,6 +1874,18 @@ export function App() {
 
     return () => window.clearInterval(interval);
   }, [activeStreamStationId]);
+
+  useEffect(() => {
+    streamFrameUrlsRef.current = streamFrameUrls;
+  }, [streamFrameUrls]);
+
+  useEffect(() => {
+    return () => {
+      for (const frameUrl of streamFrameUrlsRef.current.values()) {
+        revokeFrameUrl(frameUrl);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (!detectionNotice) {
@@ -2265,6 +2348,7 @@ export function App() {
             station={activeStreamStation}
             session={activeStreamSession}
             frame={activeStreamFrame}
+            imageUrl={activeStreamFrameUrl}
             nowMs={streamNowMs}
             error={streamError}
             onClose={closeLiveStreamViewer}

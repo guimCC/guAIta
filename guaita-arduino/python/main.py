@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: MPL-2.0
 from datetime import datetime, UTC
 import base64
+import json
 import requests
 import threading
 import time
@@ -292,22 +293,25 @@ def stream_worker_loop():
             image_bytes = encode_frame_image(frame)
             frame_width, frame_height = frame_dimensions(frame)
             boxes = extract_stream_boxes(detections) if bbox_state else []
-            payload = {
+            params = {
                 "stationId": STATION_ID,
                 "capturedAt": captured_at or datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
-                "contentType": "image/jpeg",
-                "encoding": "base64",
-                "data": base64.b64encode(image_bytes).decode("utf-8"),
-                "boundingBoxesEnabled": bbox_state,
-                "boxes": boxes,
+                "boundingBoxesEnabled": "true" if bbox_state else "false",
             }
             if frame_width is not None and frame_height is not None:
-                payload["frameWidth"] = frame_width
-                payload["frameHeight"] = frame_height
+                params["frameWidth"] = str(frame_width)
+                params["frameHeight"] = str(frame_height)
+            stream_headers = {
+                "Authorization": f"Bearer {DEVICE_TOKEN}",
+                "Content-Type": "image/jpeg",
+            }
+            if boxes:
+                stream_headers["X-Guaita-Boxes"] = json.dumps(boxes, separators=(",", ":"))
             r = session.post(
-                f"{SERVER_URL}/api/device/stream-frames",
-                json=payload,
-                headers=HEADERS,
+                f"{SERVER_URL}/api/device/stream-frames/raw",
+                params=params,
+                data=image_bytes,
+                headers=stream_headers,
                 timeout=(STREAM_CONNECT_TIMEOUT, STREAM_READ_TIMEOUT),
             )
             posted_stream_sequence = sequence

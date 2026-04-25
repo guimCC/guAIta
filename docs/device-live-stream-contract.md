@@ -58,12 +58,29 @@ The Arduino polls roughly once per second. If `stream.active` is false, it does 
 ## Device Frame Upload
 
 ```text
-POST /api/device/stream-frames
+POST /api/device/stream-frames/raw?stationId={STATION_ID}&capturedAt={ISO_TIME}&boundingBoxesEnabled=false
 Authorization: Bearer {DEVICE_TOKEN}
-Content-Type: application/json
+Content-Type: image/jpeg
 ```
 
-Payload:
+Body: raw JPEG bytes.
+
+Optional query parameters:
+
+```text
+frameWidth=640
+frameHeight=360
+```
+
+Optional header when Button B is enabled:
+
+```text
+X-Guaita-Boxes: [{"label":"0","confidence":0.91,"x":212,"y":96,"width":118,"height":84}]
+```
+
+Legacy JSON/base64 upload remains accepted at `/api/device/stream-frames`, but the Arduino app uses the raw endpoint for lower latency.
+
+Legacy JSON payload shape:
 
 ```json
 {
@@ -92,7 +109,7 @@ Rules:
 
 ```text
 format: JPEG
-encoding: base64
+encoding: raw JPEG bytes on the primary endpoint
 max decoded frame size: 750 KB
 default requested rate: 2 fps
 session TTL: 60 seconds, refreshed by dashboard keepalive
@@ -108,7 +125,7 @@ stream.session.updated
 stream.frame
 ```
 
-`stream.frame` carries a data URL for the latest JPEG so the dashboard can render it immediately without an additional HTTP image request.
+`stream.frame` carries binary JPEG bytes through Socket.IO so the dashboard can render a Blob URL without base64 data URLs.
 
 ## Demo Troubleshooting
 

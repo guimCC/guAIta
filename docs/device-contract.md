@@ -147,12 +147,16 @@ Authorization: Bearer {DEVICE_TOKEN}
 Frame upload:
 
 ```text
-POST {SERVER_URL}/api/device/stream-frames
+POST {SERVER_URL}/api/device/stream-frames/raw?stationId={STATION_ID}
 Authorization: Bearer {DEVICE_TOKEN}
-Content-Type: application/json
+Content-Type: image/jpeg
 ```
 
-Minimum frame payload:
+Body: raw JPEG bytes.
+
+The server still accepts the older JSON/base64 endpoint at `/api/device/stream-frames`, but the Arduino app uses the raw endpoint for lower latency.
+
+Legacy JSON payload:
 
 ```json
 {

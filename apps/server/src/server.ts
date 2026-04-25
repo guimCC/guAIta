@@ -67,7 +67,20 @@ interface DeviceListenerState {
 }
 
 interface DecodedLiveStreamFrame {
-  base64Data: string;
+  imageBuffer: Buffer;
+}
+
+interface LiveStreamFrameMetadata {
+  stationId: string;
+  capturedAt?: string;
+  boundingBoxesEnabled?: boolean;
+  frameWidth?: number;
+  frameHeight?: number;
+  boxes?: LiveStreamFrame["boxes"];
+}
+
+interface LiveStreamFramePacket extends LiveStreamFrame {
+  imageBytes: Buffer;
 }
 
 class SnapshotValidationError extends Error {
@@ -173,6 +186,10 @@ export async function buildServer() {
   await app.register(cors, {
     origin: config.corsOrigin,
     methods: ["GET", "POST", "PUT", "DELETE"]
+  });
+
+  app.addContentTypeParser("image/jpeg", { parseAs: "buffer" }, (_request, body, done) => {
+    done(null, body);
   });
 
   setDeviceListenerEnabled(config.deviceEventsEnabledOnStart, "server.start");
@@ -815,7 +832,7 @@ export async function buildServer() {
     }
 
     try {
-      const frame = createLiveStreamFrame(parsed.data);
+      const frame = createLiveStreamFrameFromJsonInput(parsed.data);
       updateLiveStreamSessionAfterFrame(frame);
       io.emit(SOCKET_EVENTS.streamFrame, frame);
 
@@ -836,6 +853,95 @@ export async function buildServer() {
       throw error;
     }
   });
+
+  app.post(
+    "/api/device/stream-frames/raw",
+    async (
+      request: FastifyRequest<{
+        Querystring: {
+          stationId?: string;
+          capturedAt?: string;
+          boundingBoxesEnabled?: string;
+          frameWidth?: string;
+          frameHeight?: string;
+        };
+      }>,
+      reply
+    ) => {
+      const authorization = request.headers.authorization;
+
+      if (authorization !== `Bearer ${config.deviceToken}`) {
+        return reply.code(401).send({
+          ok: false,
+          error: "unauthorized"
+        });
+      }
+
+      const stationId = request.query.stationId?.trim();
+      if (!stationId) {
+        return reply.code(400).send({
+          ok: false,
+          error: "missing_station_id"
+        });
+      }
+
+      const station = db.getStation(stationId);
+      if (!station) {
+        return reply.code(404).send({
+          ok: false,
+          error: "unknown_station",
+          stationId
+        });
+      }
+
+      const session = getLiveStreamSession(stationId);
+      if (!session.active) {
+        return reply.code(202).send({
+          ok: true,
+          ignored: true,
+          reason: "stream_inactive",
+          stream: session
+        });
+      }
+
+      try {
+        const imageBuffer = request.body instanceof Buffer ? request.body : Buffer.from([]);
+        const frame = createLiveStreamFrameFromBuffer(
+          {
+            stationId,
+            capturedAt: normalizeOptionalIsoDate(request.query.capturedAt),
+            boundingBoxesEnabled: readBooleanString(request.query.boundingBoxesEnabled),
+            frameWidth: readPositiveIntegerString(request.query.frameWidth),
+            frameHeight: readPositiveIntegerString(request.query.frameHeight),
+            boxes: parseLiveStreamBoxesHeader(request.headers["x-guaita-boxes"])
+          },
+          imageBuffer
+        );
+        const packet: LiveStreamFramePacket = {
+          ...frame,
+          imageBytes: imageBuffer
+        };
+        updateLiveStreamSessionAfterFrame(packet);
+        io.emit(SOCKET_EVENTS.streamFrame, packet);
+
+        return reply.code(201).send({
+          ok: true,
+          frameId: packet.frameId,
+          stream: getLiveStreamSession(packet.stationId)
+        });
+      } catch (error) {
+        if (error instanceof LiveStreamFrameValidationError) {
+          return reply.code(error.statusCode).send({
+            ok: false,
+            error: error.code,
+            message: error.message
+          });
+        }
+
+        throw error;
+      }
+    }
+  );
 
   app.post("/api/manual/events", async (request, reply) => {
     return createDetection(request, reply, "manual", db, io, () => {
@@ -1233,21 +1339,41 @@ function storeDetection(input: DetectionEventInput, db: GuaitaDatabase, io: Sock
   };
 }
 
-function createLiveStreamFrame(input: LiveStreamFrameInput): LiveStreamFrame {
-  const receivedAt = new Date().toISOString();
+function createLiveStreamFrameFromJsonInput(input: LiveStreamFrameInput): LiveStreamFramePacket {
   const decodedFrame = decodeLiveStreamFrame(input);
+  const frame = createLiveStreamFrameFromBuffer(
+    {
+      stationId: input.stationId,
+      capturedAt: input.capturedAt ?? undefined,
+      boundingBoxesEnabled: input.boundingBoxesEnabled,
+      frameWidth: input.frameWidth,
+      frameHeight: input.frameHeight,
+      boxes: input.boxes ?? []
+    },
+    decodedFrame.imageBuffer
+  );
 
   return {
-    stationId: input.stationId,
+    ...frame,
+    dataUrl: `data:${frame.contentType};base64,${decodedFrame.imageBuffer.toString("base64")}`,
+    imageBytes: decodedFrame.imageBuffer
+  };
+}
+
+function createLiveStreamFrameFromBuffer(metadata: LiveStreamFrameMetadata, imageBuffer: Buffer): LiveStreamFrame {
+  assertValidLiveStreamJpeg(imageBuffer);
+  const receivedAt = new Date().toISOString();
+
+  return {
+    stationId: metadata.stationId,
     frameId: `frm_${Date.now().toString(36)}_${randomUUID().slice(0, 8)}`,
-    capturedAt: input.capturedAt ?? receivedAt,
+    capturedAt: metadata.capturedAt ?? receivedAt,
     receivedAt,
-    contentType: input.contentType,
-    dataUrl: `data:${input.contentType};base64,${decodedFrame.base64Data}`,
-    boundingBoxesEnabled: input.boundingBoxesEnabled ?? false,
-    frameWidth: input.frameWidth,
-    frameHeight: input.frameHeight,
-    boxes: input.boxes ?? []
+    contentType: "image/jpeg",
+    boundingBoxesEnabled: metadata.boundingBoxesEnabled ?? false,
+    frameWidth: metadata.frameWidth,
+    frameHeight: metadata.frameHeight,
+    boxes: metadata.boxes ?? []
   };
 }
 
@@ -1264,6 +1390,14 @@ function decodeLiveStreamFrame(input: LiveStreamFrameInput): DecodedLiveStreamFr
   const paddedData = base64Data.padEnd(Math.ceil(base64Data.length / 4) * 4, "=");
   const imageBuffer = Buffer.from(paddedData, "base64");
 
+  assertValidLiveStreamJpeg(imageBuffer);
+
+  return {
+    imageBuffer
+  };
+}
+
+function assertValidLiveStreamJpeg(imageBuffer: Buffer): void {
   if (imageBuffer.length === 0) {
     throw new LiveStreamFrameValidationError("invalid_stream_frame", 400, "Stream frame image is empty.");
   }
@@ -1275,10 +1409,46 @@ function decodeLiveStreamFrame(input: LiveStreamFrameInput): DecodedLiveStreamFr
   if (imageBuffer[0] !== 0xff || imageBuffer[1] !== 0xd8) {
     throw new LiveStreamFrameValidationError("invalid_stream_frame", 400, "Stream frame must be a JPEG image.");
   }
+}
 
-  return {
-    base64Data: imageBuffer.toString("base64")
-  };
+function readBooleanString(value: string | undefined): boolean | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  return ["1", "true", "yes", "on"].includes(value.toLowerCase());
+}
+
+function readPositiveIntegerString(value: string | undefined): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function normalizeOptionalIsoDate(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  return Number.isNaN(new Date(value).getTime()) ? undefined : value;
+}
+
+function parseLiveStreamBoxesHeader(value: string | string[] | undefined): LiveStreamFrameMetadata["boxes"] {
+  const rawValue = Array.isArray(value) ? value[0] : value;
+  if (!rawValue) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(rawValue) as unknown;
+    const input = LiveStreamFrameInputSchema.pick({ boxes: true }).safeParse({ boxes: parsed });
+    return input.success ? input.data.boxes ?? [] : [];
+  } catch {
+    return [];
+  }
 }
 
 function snapshotBaseNameForEvent(eventId: string): string {
