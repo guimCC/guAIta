@@ -310,6 +310,27 @@ def maybe_post_stream_frame(frame: bytes, detections: dict = None):
         latest_stream_bbox_state = show_bounding_boxes
         latest_stream_sequence += 1
 
+def attach_camera_stream_tap(detection_stream):
+    camera = getattr(detection_stream, "_camera", None)
+    capture = getattr(camera, "capture", None)
+
+    if camera is None or not callable(capture):
+        print("[stream] camera tap unavailable; live stream will wait for detection callback frames")
+        return
+
+    def capture_with_stream_tap(*args, **kwargs):
+        global camera_is_working, last_frame
+
+        frame = capture(*args, **kwargs)
+        if frame is not None:
+            camera_is_working = True
+            last_frame = frame
+            maybe_post_stream_frame(frame, last_detections)
+        return frame
+
+    setattr(camera, "capture", capture_with_stream_tap)
+    print("[stream] camera tap attached")
+
 def build_stream_frame_part():
     global last_stream_frame_post, posted_stream_sequence, last_stream_wait_print
 
@@ -527,6 +548,7 @@ def on_all_detections(detections: dict, frame: bytes):
 
 ui = WebUI()
 detector = VideoObjectDetection(confidence=0.1, debounce_sec=0.0, camera_preview=True)
+attach_camera_stream_tap(detector)
 detector.on_detect_all(on_all_detections)
 ui.on_message("override_th", lambda sid, threshold: detector.override_threshold(threshold))
 
