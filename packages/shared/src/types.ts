@@ -9,6 +9,9 @@ import type {
   DetectionSnapshotInputSchema,
   DetectionSourceSchema,
   DirectionSchema,
+  LiveStreamFrameInputSchema,
+  LiveStreamFrameSchema,
+  LiveStreamSessionSchema,
   RecommendedActionSchema,
   ScenarioStateSchema,
   ScenarioStatusSchema,
@@ -37,6 +40,9 @@ export type ZoneKind = z.infer<typeof ZoneKindSchema>;
 export type Direction = z.infer<typeof DirectionSchema>;
 
 export type DetectionSnapshotInput = z.infer<typeof DetectionSnapshotInputSchema>;
+export type LiveStreamSession = z.infer<typeof LiveStreamSessionSchema>;
+export type LiveStreamFrameInput = z.infer<typeof LiveStreamFrameInputSchema>;
+export type LiveStreamFrame = z.infer<typeof LiveStreamFrameSchema>;
 export type DetectionEvent = z.infer<typeof DetectionEventSchema>;
 export type DetectionEventInput = z.infer<typeof DetectionEventInputSchema>;
 export type TelemetryReading = z.infer<typeof TelemetryReadingSchema>;

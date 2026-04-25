@@ -9,6 +9,7 @@ import {
   Clock3,
   Droplets,
   FastForward,
+  Image as ImageIcon,
   MapPin,
   Pause,
   PhoneCall,
@@ -20,16 +21,24 @@ import {
   Sun,
   Thermometer,
   Trash2,
+  Video,
   Wifi,
-  WifiOff
+  WifiOff,
+  X
 } from "lucide-react";
-import maplibregl, { type GeoJSONSource, type Map as MapLibreMap } from "maplibre-gl";
-import { useEffect, useMemo, useRef, useState } from "react";
+import maplibregl, {
+  type GeoJSONSource,
+  type Map as MapLibreMap,
+  type MapLayerMouseEvent
+} from "maplibre-gl";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { io, type Socket } from "socket.io-client";
 import {
   SOCKET_EVENTS,
   type CivilProtectionCall,
   type DetectionEvent,
+  type LiveStreamFrame,
+  type LiveStreamSession,
   type ScenarioState,
   type Station,
   type TelemetryReading,
@@ -52,6 +61,9 @@ interface CallStage {
 const DEMO_DETECTION_STATION_ID = "collserola-control-02";
 const DETECTION_FLASH_TTL_MS = 6_500;
 const DETECTION_FLASH_INTERVAL_MS = 80;
+const STREAM_KEEPALIVE_INTERVAL_MS = 15_000;
+const STREAM_STALE_AFTER_MS = 5_000;
+const DETECTION_NOTICE_TTL_MS = 18_000;
 const ACTIONABLE_CONFIDENCE_THRESHOLD = 0.85;
 const SCENARIO_WATCH_CONFIDENCE_THRESHOLD = 0.6;
 const LOW_LIGHT_LUX_THRESHOLD = 250;
@@ -72,6 +84,13 @@ interface EventsResponse {
 
 interface TelemetryResponse {
   telemetry: TelemetryReading[];
+}
+
+interface StreamResponse {
+  ok: boolean;
+  stream?: LiveStreamSession;
+  error?: string;
+  message?: string;
 }
 
 interface DeviceListeningState {
@@ -141,6 +160,11 @@ interface LightAlertItem {
 }
 
 interface DetectionFlash {
+  event: DetectionEvent;
+  receivedAtMs: number;
+}
+
+interface DetectionNotice {
   event: DetectionEvent;
   receivedAtMs: number;
 }
@@ -221,6 +245,21 @@ function latestCallsByEvent(calls: CivilProtectionCall[]): CivilProtectionCall[]
 
 function upsertTelemetry(readings: TelemetryReading[], reading: TelemetryReading): TelemetryReading[] {
   return [reading, ...readings.filter((existing) => existing.telemetryId !== reading.telemetryId)].slice(0, 200);
+}
+
+function upsertStreamSession(
+  sessions: Map<string, LiveStreamSession>,
+  session: LiveStreamSession
+): Map<string, LiveStreamSession> {
+  const nextSessions = new Map(sessions);
+  nextSessions.set(session.stationId, session);
+  return nextSessions;
+}
+
+function upsertStreamFrame(frames: Map<string, LiveStreamFrame>, frame: LiveStreamFrame): Map<string, LiveStreamFrame> {
+  const nextFrames = new Map(frames);
+  nextFrames.set(frame.stationId, frame);
+  return nextFrames;
 }
 
 function formatTime(value: string): string {
@@ -775,14 +814,73 @@ function setSourceData(map: MapLibreMap, sourceId: string, data: FeatureCollecti
   source?.setData(data);
 }
 
+type LiveStreamStatus = "live" | "waiting" | "stale" | "offline";
+
+function liveStreamStatus(
+  session: LiveStreamSession | undefined,
+  frame: LiveStreamFrame | undefined,
+  nowMs: number
+): LiveStreamStatus {
+  if (!session?.active) {
+    return "offline";
+  }
+
+  if (!frame) {
+    return "waiting";
+  }
+
+  return nowMs - new Date(frame.receivedAt).getTime() > STREAM_STALE_AFTER_MS ? "stale" : "live";
+}
+
+function streamStatusLabel(status: LiveStreamStatus): string {
+  switch (status) {
+    case "live":
+      return "Live";
+    case "waiting":
+      return "Waiting";
+    case "stale":
+      return "Stale";
+    case "offline":
+      return "Closed";
+  }
+}
+
+type LiveStreamBox = NonNullable<LiveStreamFrame["boxes"]>[number];
+
+function clampPercent(value: number): number {
+  return Math.max(0, Math.min(100, value));
+}
+
+function liveStreamBoxStyle(box: LiveStreamBox, frame: LiveStreamFrame): CSSProperties {
+  const maxBoxValue = Math.max(box.x, box.y, box.width, box.height);
+  const isNormalized = maxBoxValue <= 1.5;
+  const frameWidth = frame.frameWidth ?? 0;
+  const frameHeight = frame.frameHeight ?? 0;
+  const xPct = isNormalized ? box.x * 100 : frameWidth > 0 ? (box.x / frameWidth) * 100 : box.x;
+  const yPct = isNormalized ? box.y * 100 : frameHeight > 0 ? (box.y / frameHeight) * 100 : box.y;
+  const widthPct = isNormalized ? box.width * 100 : frameWidth > 0 ? (box.width / frameWidth) * 100 : box.width;
+  const heightPct = isNormalized ? box.height * 100 : frameHeight > 0 ? (box.height / frameHeight) * 100 : box.height;
+
+  return {
+    left: `${clampPercent(xPct)}%`,
+    top: `${clampPercent(yPct)}%`,
+    width: `${clampPercent(widthPct)}%`,
+    height: `${clampPercent(heightPct)}%`
+  };
+}
+
 function MapPanel({
   stations,
   zones,
-  events
+  events,
+  onOpenStationStream,
+  children
 }: {
   stations: Station[];
   zones: Zone[];
   events: DetectionEvent[];
+  onOpenStationStream: (stationId: string) => void;
+  children?: ReactNode;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
@@ -791,10 +889,15 @@ function MapPanel({
   const flashesRef = useRef<Map<string, DetectionFlash>>(new Map());
   const hydratedEventsRef = useRef(false);
   const seenEventIdsRef = useRef<Set<string>>(new Set());
+  const onOpenStationStreamRef = useRef(onOpenStationStream);
 
   const stationById = useMemo(() => new Map(stations.map((station) => [station.id, station])), [stations]);
   const stationFeatures = useMemo(() => buildStationFeatures(stations), [stations]);
   const zoneFeatures = useMemo(() => buildZoneFeatures(zones), [zones]);
+
+  useEffect(() => {
+    onOpenStationStreamRef.current = onOpenStationStream;
+  }, [onOpenStationStream]);
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) {
@@ -918,6 +1021,18 @@ function MapPanel({
           "text-halo-color": "#1c1917",
           "text-halo-width": 1.1
         }
+      });
+      map.on("click", "stations", (event: MapLayerMouseEvent) => {
+        const stationId = event.features?.[0]?.properties?.id;
+        if (typeof stationId === "string" && stationId) {
+          onOpenStationStreamRef.current(stationId);
+        }
+      });
+      map.on("mouseenter", "stations", () => {
+        map.getCanvas().style.cursor = "pointer";
+      });
+      map.on("mouseleave", "stations", () => {
+        map.getCanvas().style.cursor = "";
       });
       map.addSource("events", {
         type: "geojson",
@@ -1054,6 +1169,165 @@ function MapPanel({
         <span>{events.length} detections</span>
       </div>
       {mapError ? <div className="map-error">{mapError}</div> : null}
+      {children}
+    </section>
+  );
+}
+
+function LiveStreamViewer({
+  station,
+  session,
+  frame,
+  streamUrl,
+  nowMs,
+  error,
+  onClose,
+  onReconnectStream
+}: {
+  station: Station | undefined;
+  session: LiveStreamSession | undefined;
+  frame: LiveStreamFrame | undefined;
+  streamUrl: string | undefined;
+  nowMs: number;
+  error: string | null;
+  onClose: () => void;
+  onReconnectStream: () => void;
+}) {
+  const status = liveStreamStatus(session, frame, nowMs);
+  const stationName = station?.name ?? session?.stationId ?? frame?.stationId ?? "Station camera";
+  const lastFrameLabel = frame ? formatTime(frame.receivedAt) : "waiting";
+  const boundingBoxesEnabled = frame?.boundingBoxesEnabled ?? session?.lastBoundingBoxesEnabled ?? false;
+  const boxes = boundingBoxesEnabled && frame ? frame.boxes : [];
+
+  return (
+    <section className={`live-viewer ${status}`} aria-label={`Live camera viewer for ${stationName}`}>
+      <header className="live-viewer-header">
+        <div>
+          <span className={`live-status-dot ${status}`} />
+          <div>
+            <p className="eyebrow">Live camera</p>
+            <h3>{stationName}</h3>
+          </div>
+        </div>
+        <button className="live-viewer-close" type="button" onClick={onClose} title="Close live camera">
+          <X size={16} />
+        </button>
+      </header>
+
+      <div className="live-frame-stage">
+        {streamUrl ? (
+          <>
+            <img src={streamUrl} alt={`Live camera feed from ${stationName}`} onError={onReconnectStream} />
+            {frame && boxes.length ? (
+              <div className="live-box-overlay" aria-hidden="true">
+                {boxes.map((box, index) => (
+                  <span className="live-box" key={`${frame.frameId}-${index}`} style={liveStreamBoxStyle(box, frame)}>
+                    <em>{box.confidence === undefined ? box.label ?? "boar" : `${Math.round(box.confidence * 100)}%`}</em>
+                  </span>
+                ))}
+              </div>
+            ) : null}
+          </>
+        ) : null}
+        {!frame ? (
+          <div className={`live-frame-empty ${streamUrl ? "overlay" : ""}`}>
+            <Video size={30} />
+            <span>Waiting for device frames</span>
+          </div>
+        ) : null}
+        {error ? <div className="live-frame-error">{error}</div> : null}
+      </div>
+
+      <footer className="live-viewer-meta">
+        <span>{streamStatusLabel(status)}</span>
+        <span>{lastFrameLabel}</span>
+        <span>{session?.targetFps ?? 2} fps</span>
+        <strong>{boundingBoxesEnabled ? "Boxes on" : "Boxes off"}</strong>
+      </footer>
+    </section>
+  );
+}
+
+function SnapshotModal({
+  event,
+  stationName,
+  onClose
+}: {
+  event: DetectionEvent;
+  stationName: string;
+  onClose: () => void;
+}) {
+  const photoUrl = eventPhotoUrl(event);
+
+  return (
+    <div className="modal-scrim" role="presentation">
+      <section className="snapshot-modal" aria-label={`Detection image for ${stationName}`}>
+        <header className="snapshot-modal-header">
+          <div>
+            <p className="eyebrow">Detection image</p>
+            <h3>{stationName}</h3>
+          </div>
+          <button className="live-viewer-close" type="button" onClick={onClose} title="Close image">
+            <X size={16} />
+          </button>
+        </header>
+        <div className="snapshot-modal-stage">
+          {photoUrl ? <img src={photoUrl} alt={`Detection snapshot from ${stationName}`} /> : <span>Image unavailable</span>}
+        </div>
+        <footer className="snapshot-modal-meta">
+          <span>{formatTime(event.observedAt)}</span>
+          <strong>{percent(event.confidence)}</strong>
+          {photoUrl ? (
+            <a href={eventPhotoViewerUrl(event)} target="_blank" rel="noreferrer">
+              Full viewer
+            </a>
+          ) : null}
+        </footer>
+      </section>
+    </div>
+  );
+}
+
+function DetectionNotification({
+  notice,
+  stationName,
+  onWatchLive,
+  onViewImage,
+  onClose
+}: {
+  notice: DetectionNotice;
+  stationName: string;
+  onWatchLive: () => void;
+  onViewImage: () => void;
+  onClose: () => void;
+}) {
+  const photoUrl = eventPhotoUrl(notice.event);
+
+  return (
+    <section className="detection-notice" aria-label="Device detection notification">
+      <div className="detection-notice-media">
+        {photoUrl ? <img src={photoUrl} alt={`Detection snapshot from ${stationName}`} /> : <Camera size={24} />}
+      </div>
+      <div className="detection-notice-body">
+        <div className="detection-notice-head">
+          <span>Device detection</span>
+          <strong>{percent(notice.event.confidence)}</strong>
+          <button type="button" onClick={onClose} title="Dismiss detection notification">
+            <X size={14} />
+          </button>
+        </div>
+        <p>{stationName}</p>
+        <div className="detection-notice-actions">
+          <button type="button" onClick={onWatchLive}>
+            <Video size={13} />
+            Watch live
+          </button>
+          <button type="button" onClick={onViewImage} disabled={!photoUrl}>
+            <ImageIcon size={13} />
+            View image
+          </button>
+        </div>
+      </div>
     </section>
   );
 }
@@ -1190,11 +1464,21 @@ export function App() {
   const [isScenarioBusy, setIsScenarioBusy] = useState(false);
   const [isSettingDeviceListening, setIsSettingDeviceListening] = useState(false);
   const [expandedStationId, setExpandedStationId] = useState<string | null>(null);
+  const [activeStreamStationId, setActiveStreamStationId] = useState<string | null>(null);
+  const [streamViewerKey, setStreamViewerKey] = useState(() => Date.now());
+  const [streamSessions, setStreamSessions] = useState<Map<string, LiveStreamSession>>(() => new Map());
+  const [streamFrames, setStreamFrames] = useState<Map<string, LiveStreamFrame>>(() => new Map());
+  const [streamError, setStreamError] = useState<string | null>(null);
+  const [streamNowMs, setStreamNowMs] = useState(() => Date.now());
+  const [snapshotModalEvent, setSnapshotModalEvent] = useState<DetectionEvent | null>(null);
+  const [detectionNotice, setDetectionNotice] = useState<DetectionNotice | null>(null);
   const [resolvedAlertEventIds, setResolvedAlertEventIds] = useState<Set<string>>(() => new Set());
   const stationListRef = useRef<HTMLDivElement | null>(null);
   const [listenFromDevice, setListenFromDevice] = useState(false);
   const listenFromDeviceRef = useRef(false);
   const ignoredDeviceEventIdsRef = useRef<Set<string>>(new Set());
+  const activeStreamStationIdRef = useRef<string | null>(null);
+  const lastStreamReconnectAtRef = useRef(0);
 
   const stationById = useMemo(() => new Map(stations.map((station) => [station.id, station])), [stations]);
   const latestTelemetryByStation = useMemo(() => {
@@ -1259,6 +1543,12 @@ export function App() {
     isCallingCivilProtection,
     Boolean(activeAlertEvent)
   );
+  const activeStreamStation = activeStreamStationId ? stationById.get(activeStreamStationId) : undefined;
+  const activeStreamSession = activeStreamStationId ? streamSessions.get(activeStreamStationId) : undefined;
+  const activeStreamFrame = activeStreamStationId ? streamFrames.get(activeStreamStationId) : undefined;
+  const activeStreamImageUrl = activeStreamStationId
+    ? apiUrl(`/api/streams/${encodeURIComponent(activeStreamStationId)}/image-stream?viewer=${streamViewerKey}`)
+    : undefined;
 
   function applyDeviceListeningState(nextValue: boolean, options?: { clearIgnoredEvents?: boolean }) {
     listenFromDeviceRef.current = nextValue;
@@ -1266,6 +1556,87 @@ export function App() {
 
     if (options?.clearIgnoredEvents) {
       ignoredDeviceEventIdsRef.current.clear();
+    }
+  }
+
+  function applyActiveStreamStationId(stationId: string | null) {
+    activeStreamStationIdRef.current = stationId;
+    setActiveStreamStationId(stationId);
+  }
+
+  async function startLiveStream(stationId: string, options?: { silent?: boolean }) {
+    if (!options?.silent) {
+      setStreamError(null);
+    }
+
+    try {
+      const response = await fetch(apiUrl(`/api/streams/${encodeURIComponent(stationId)}/start`), {
+        method: "POST"
+      });
+      const body = (await response.json()) as StreamResponse;
+
+      if (!response.ok || !body.ok || !body.stream) {
+        throw new Error(body.message ?? body.error ?? `${response.status} ${response.statusText}`);
+      }
+
+      setStreamSessions((currentSessions) => upsertStreamSession(currentSessions, body.stream as LiveStreamSession));
+      if (!options?.silent) {
+        setStreamError(null);
+      }
+    } catch (streamStartError) {
+      if (!options?.silent) {
+        setStreamError(streamStartError instanceof Error ? streamStartError.message : "Could not start live stream.");
+      }
+    }
+  }
+
+  async function stopLiveStream(stationId: string) {
+    try {
+      const response = await fetch(apiUrl(`/api/streams/${encodeURIComponent(stationId)}/stop`), {
+        method: "POST"
+      });
+      const body = (await response.json()) as StreamResponse;
+
+      if (response.ok && body.stream) {
+        setStreamSessions((currentSessions) => upsertStreamSession(currentSessions, body.stream as LiveStreamSession));
+      }
+    } catch {
+      // Closing the viewer should never leave the dashboard stuck.
+    }
+  }
+
+  function openLiveStreamViewer(stationId: string) {
+    const previousStationId = activeStreamStationIdRef.current;
+    if (previousStationId && previousStationId !== stationId) {
+      void stopLiveStream(previousStationId);
+    }
+
+    applyActiveStreamStationId(stationId);
+    setStreamViewerKey(Date.now());
+    setStreamNowMs(Date.now());
+    void startLiveStream(stationId);
+  }
+
+  function closeLiveStreamViewer() {
+    const stationId = activeStreamStationIdRef.current;
+    applyActiveStreamStationId(null);
+    setStreamError(null);
+
+    if (stationId) {
+      setStreamFrames((currentFrames) => {
+        const nextFrames = new Map(currentFrames);
+        nextFrames.delete(stationId);
+        return nextFrames;
+      });
+      void stopLiveStream(stationId);
+    }
+  }
+
+  function reconnectLiveStreamImage() {
+    const now = Date.now();
+    if (activeStreamStationIdRef.current && now - lastStreamReconnectAtRef.current > 1_500) {
+      lastStreamReconnectAtRef.current = now;
+      setStreamViewerKey(Date.now());
     }
   }
 
@@ -1371,6 +1742,10 @@ export function App() {
         }
 
         applyDeviceListeningState(false);
+        setDetectionNotice({
+          event,
+          receivedAtMs: Date.now()
+        });
       }
 
       setEvents((currentEvents) => upsertEvent(currentEvents, event));
@@ -1394,11 +1769,20 @@ export function App() {
     socket.on(SOCKET_EVENTS.telemetryCleared, () => {
       setTelemetryReadings([]);
     });
+    socket.on(SOCKET_EVENTS.streamSessionUpdated, (session: LiveStreamSession) => {
+      setStreamSessions((currentSessions) => upsertStreamSession(currentSessions, session));
+    });
+    socket.on(SOCKET_EVENTS.streamFrame, (frame: LiveStreamFrame) => {
+      setStreamFrames((currentFrames) => upsertStreamFrame(currentFrames, frame));
+      setStreamNowMs(Date.now());
+    });
     socket.on(SOCKET_EVENTS.deviceListenerUpdated, (state: DeviceListeningState) => {
       applyDeviceListeningState(state.enabled, { clearIgnoredEvents: state.enabled });
     });
     socket.on(SOCKET_EVENTS.eventsCleared, () => {
       setEvents([]);
+      setDetectionNotice(null);
+      setSnapshotModalEvent(null);
       setResolvedAlertEventIds(new Set());
     });
     socket.on(SOCKET_EVENTS.callUpdated, (call: CivilProtectionCall) => {
@@ -1421,17 +1805,43 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    const interval = window.setInterval(async () => {
-      try {
-        const callResponse = await fetchJson<CallsResponse>("/api/calls?limit=20");
-        setCalls(callResponse.calls);
-      } catch {
-        // Socket.IO remains the primary path; polling is a quiet fallback for call status.
-      }
-    }, 3_000);
+    if (!activeStreamStationId) {
+      return;
+    }
+
+    const interval = window.setInterval(() => {
+      setStreamNowMs(Date.now());
+    }, 1_000);
 
     return () => window.clearInterval(interval);
-  }, []);
+  }, [activeStreamStationId]);
+
+  useEffect(() => {
+    if (!activeStreamStationId) {
+      return;
+    }
+
+    const interval = window.setInterval(() => {
+      void startLiveStream(activeStreamStationId, { silent: true });
+    }, STREAM_KEEPALIVE_INTERVAL_MS);
+
+    return () => window.clearInterval(interval);
+  }, [activeStreamStationId]);
+
+  useEffect(() => {
+    if (!detectionNotice) {
+      return;
+    }
+
+    const remainingMs = Math.max(1, DETECTION_NOTICE_TTL_MS - (Date.now() - detectionNotice.receivedAtMs));
+    const timeout = window.setTimeout(() => {
+      setDetectionNotice((currentNotice) => {
+        return currentNotice?.event.eventId === detectionNotice.event.eventId ? null : currentNotice;
+      });
+    }, remainingMs);
+
+    return () => window.clearTimeout(timeout);
+  }, [detectionNotice]);
 
   useEffect(() => {
     if (!expandedStationId || !stationListRef.current) {
@@ -1784,24 +2194,35 @@ export function App() {
 
               return (
                 <article className="station-card" data-station-id={station.id} key={station.id}>
-                  <button
-                    className="station-row"
-                    type="button"
-                    aria-expanded={expandedStationId === station.id}
-                    onClick={() => setExpandedStationId((currentId) => (currentId === station.id ? null : station.id))}
-                  >
-                    <span
-                      className={`station-dot ${station.status} ${stationIsRisk ? "risk" : ""} ${
-                        stationIsDevice ? "device" : ""
-                      }`}
-                    />
-                    <div>
-                      <strong>{station.name}</strong>
-                      <span>{stationIsDevice ? "device" : telemetry ? "telemetry" : stationIsRisk ? "risk" : station.type}</span>
-                    </div>
-                    <em>{formatBattery(batteryPct)}</em>
-                    <ChevronDown className="station-chevron" size={15} />
-                  </button>
+                  <div className="station-row">
+                    <button
+                      className="station-expand-button"
+                      type="button"
+                      aria-expanded={expandedStationId === station.id}
+                      onClick={() => setExpandedStationId((currentId) => (currentId === station.id ? null : station.id))}
+                    >
+                      <span
+                        className={`station-dot ${station.status} ${stationIsRisk ? "risk" : ""} ${
+                          stationIsDevice ? "device" : ""
+                        }`}
+                      />
+                      <div>
+                        <strong>{station.name}</strong>
+                        <span>{stationIsDevice ? "device" : telemetry ? "telemetry" : stationIsRisk ? "risk" : station.type}</span>
+                      </div>
+                      <em>{formatBattery(batteryPct)}</em>
+                      <ChevronDown className="station-chevron" size={15} />
+                    </button>
+                    <button
+                      className="station-camera-button"
+                      type="button"
+                      onClick={() => openLiveStreamViewer(station.id)}
+                      title={`Open live camera for ${station.name}`}
+                      aria-label={`Open live camera for ${station.name}`}
+                    >
+                      <Camera size={14} />
+                    </button>
+                  </div>
                   <div className={expandedStationId === station.id ? "station-details open" : "station-details"}>
                     <dl>
                       <div>
@@ -1862,7 +2283,20 @@ export function App() {
         {error ? <div className="error-banner">{error}</div> : null}
       </aside>
 
-      <MapPanel stations={stations} zones={zones} events={events} />
+      <MapPanel stations={stations} zones={zones} events={events} onOpenStationStream={openLiveStreamViewer}>
+        {activeStreamStationId ? (
+          <LiveStreamViewer
+            station={activeStreamStation}
+            session={activeStreamSession}
+            frame={activeStreamFrame}
+            streamUrl={activeStreamImageUrl}
+            nowMs={streamNowMs}
+            error={streamError}
+            onClose={closeLiveStreamViewer}
+            onReconnectStream={reconnectLiveStreamImage}
+          />
+        ) : null}
+      </MapPanel>
 
       <aside className="right-rail">
         <section className="panel-section rail-quarter latest-panel">
@@ -1877,16 +2311,15 @@ export function App() {
                   <span className={`source-badge ${latestEvent.source}`}>{latestEvent.source}</span>
                   <div className="latest-actions">
                     {eventPhotoUrl(latestEvent) ? (
-                      <a
+                      <button
                         className="photo-icon-link"
-                        href={eventPhotoViewerUrl(latestEvent)}
-                        target="_blank"
-                        rel="noreferrer"
+                        type="button"
+                        onClick={() => setSnapshotModalEvent(latestEvent)}
                         title="Open detection photo"
                         aria-label="Open detection photo"
                       >
                         <Camera size={14} />
-                      </a>
+                      </button>
                     ) : null}
                     <strong>{percent(latestEvent.confidence)}</strong>
                   </div>
@@ -2081,16 +2514,15 @@ export function App() {
               <strong>{stationLabel(event.stationId, stationById)}</strong>
               <em>{event.source}</em>
               {eventPhotoUrl(event) ? (
-                <a
+                <button
                   className="timeline-photo-link"
-                  href={eventPhotoViewerUrl(event)}
-                  target="_blank"
-                  rel="noreferrer"
+                  type="button"
+                  onClick={() => setSnapshotModalEvent(event)}
                   title="Open detection photo"
                   aria-label={`Open photo for ${stationLabel(event.stationId, stationById)}`}
                 >
                   <Camera size={13} />
-                </a>
+                </button>
               ) : (
                 <span className="timeline-photo-placeholder" aria-hidden="true" />
               )}
@@ -2100,6 +2532,30 @@ export function App() {
           {events.length === 0 ? <div className="empty-state timeline-empty">No events stored</div> : null}
         </div>
       </section>
+
+      {detectionNotice ? (
+        <DetectionNotification
+          notice={detectionNotice}
+          stationName={stationLabel(detectionNotice.event.stationId, stationById)}
+          onWatchLive={() => {
+            openLiveStreamViewer(detectionNotice.event.stationId);
+            setDetectionNotice(null);
+          }}
+          onViewImage={() => {
+            setSnapshotModalEvent(detectionNotice.event);
+            setDetectionNotice(null);
+          }}
+          onClose={() => setDetectionNotice(null)}
+        />
+      ) : null}
+
+      {snapshotModalEvent ? (
+        <SnapshotModal
+          event={snapshotModalEvent}
+          stationName={stationLabel(snapshotModalEvent.stationId, stationById)}
+          onClose={() => setSnapshotModalEvent(null)}
+        />
+      ) : null}
     </main>
   );
 }

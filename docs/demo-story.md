@@ -35,9 +35,12 @@ Demo-safe close:
 
 4. Show a real edge event.
    - Arm **Listen from device** in the dashboard when the presenter is ready for the live device moment.
+   - Press the camera icon on Control Station 02 to open the compact live viewer.
+   - The viewer shows low-rate frames from the UNO Q through the server; this is operational evidence, not cloud inference.
+   - Press Button B on the Arduino to toggle bounding boxes in the live viewer.
    - Put a boar image/video in front of the live camera.
    - The device detects the boar locally.
-   - A live device event appears on the map, the backend auto-disarms device listening, and pauses the scenario clock.
+   - A live device event appears on the map, a compact detection popup offers **Watch live** and **View image**, the backend auto-disarms device listening, and pauses the scenario clock.
    - Additional device detections are ignored while the listener is disarmed, keeping the demo focused on one incident.
 
 5. Escalate operationally.
@@ -72,6 +75,8 @@ Boar movement increases near a Collserola boundary early in the morning, close t
 - Scenario detections remain visible in the timeline, while live device events and the manual Edge AI simulation create call-worthy alerts that require an explicit operator call action.
 - Scenario controls: start, pause, advance, reset.
 - Live device event label when Arduino sends real data.
+- Station camera icons open an on-demand live viewer; detection image buttons open an in-dashboard image modal.
+- The live viewer should be described as low-rate evidence streaming. The Edge AI detection still happens on the Arduino UNO Q.
 
 ## Copy Tone
 

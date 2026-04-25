@@ -37,6 +37,77 @@ export const DetectionSnapshotInputSchema = z
   })
   .strict();
 
+export const LiveStreamSessionSchema = z
+  .object({
+    stationId: z.string().min(1),
+    active: z.boolean(),
+    targetFps: z.number().positive(),
+    frameIntervalMs: z.number().int().positive(),
+    requestedAt: z.string().datetime().optional(),
+    updatedAt: z.string().datetime(),
+    expiresAt: z.string().datetime().optional(),
+    lastFrameAt: z.string().datetime().optional(),
+    lastFrameId: z.string().min(1).optional(),
+    lastBoundingBoxesEnabled: z.boolean().optional()
+  })
+  .strict();
+
+export const LiveStreamFrameInputSchema = z
+  .object({
+    stationId: z.string().min(1),
+    capturedAt: z.string().datetime().nullish(),
+    contentType: z.enum(["image/jpeg", "image/png"]),
+    encoding: z.literal("base64"),
+    data: z.string().min(1).max(1_050_000),
+    boundingBoxesEnabled: z.boolean().optional(),
+    frameWidth: z.number().int().positive().optional(),
+    frameHeight: z.number().int().positive().optional(),
+    boxes: z
+      .array(
+        z
+          .object({
+            label: z.string().min(1).optional(),
+            confidence: z.number().min(0).max(1).optional(),
+            x: z.number(),
+            y: z.number(),
+            width: z.number().positive(),
+            height: z.number().positive()
+          })
+          .strict()
+      )
+      .max(20)
+      .optional()
+  })
+  .strict();
+
+export const LiveStreamFrameSchema = z
+  .object({
+    stationId: z.string().min(1),
+    frameId: z.string().min(1),
+    capturedAt: z.string().datetime(),
+    receivedAt: z.string().datetime(),
+    contentType: z.enum(["image/jpeg", "image/png"]),
+    dataUrl: z.string().min(1).optional(),
+    boundingBoxesEnabled: z.boolean(),
+    frameWidth: z.number().int().positive().optional(),
+    frameHeight: z.number().int().positive().optional(),
+    boxes: z
+      .array(
+        z
+          .object({
+            label: z.string().min(1).optional(),
+            confidence: z.number().min(0).max(1).optional(),
+            x: z.number(),
+            y: z.number(),
+            width: z.number().positive(),
+            height: z.number().positive()
+          })
+          .strict()
+      )
+      .default([])
+  })
+  .strict();
+
 const TemperatureSchema = z.number();
 const HumidityPctSchema = z.number().min(0).max(100);
 const LightLuxSchema = z.number().nonnegative();

@@ -17,10 +17,11 @@ Build a reliable demo system where a real or simulated edge device detects wild 
 ```mermaid
 flowchart LR
   A["Arduino UNO Q\nCamera + Edge AI model + sensors"] -->|HTTP JSON| B["Fastify Server"]
+  A -->|HTTP image frames on demand| B
   C["Scenario Engine"] -->|same event schema| B
   D["Manual Demo Controls"] -->|same event schema| B
   B --> E["SQLite\nstations, zones, events, telemetry, calls"]
-  B -->|Socket.IO realtime| F["React Dashboard"]
+  B -->|Socket.IO metadata + multipart image stream| F["React Dashboard"]
   B -->|optional outbound call| I["ElevenLabs + Twilio\nvoice escalation"]
   F --> G["MapLibre Map\nstations, zones, alerts"]
   F --> H["Sidebars\nmetrics, actions, timeline"]
@@ -35,13 +36,16 @@ flowchart LR
 5. The action recommender creates one or more recommended actions.
 6. Socket.IO broadcasts the new detection, alert, and action to connected dashboards.
 7. The frontend updates the map, sidebars, metrics, and event graph.
-8. Device detections and the manual Edge AI simulation are escalation-worthy alerts. They do not place calls automatically; the dashboard operator must press **Call Civil Protection** to create the call record and optionally start an ElevenLabs outbound call with the incident packet.
-9. Scenario detections remain ambient context in the map and timeline; they do not replace the primary call-worthy alert.
-10. ElevenLabs acknowledgement and post-call webhooks update the stored call and broadcast `call.updated`.
+8. The operator may open a live viewer for any station. The server stores an in-memory stream session; the Arduino polls for that session and uploads low-rate JPEG or PNG frames while it is active.
+9. Device detections and the manual Edge AI simulation are escalation-worthy alerts. They do not place calls automatically; the dashboard operator must press **Call Civil Protection** to create the call record and optionally start an ElevenLabs outbound call with the incident packet.
+10. Scenario detections remain ambient context in the map and timeline; they do not replace the primary call-worthy alert.
+11. ElevenLabs acknowledgement and post-call webhooks update the stored call and broadcast `call.updated`.
 
 During local development the server clears runtime demo data on startup by default (`DEMO_RESET_ON_START=true`) and starts with live device detections disarmed (`DEVICE_EVENTS_ENABLED_ON_START=false`). The dashboard `Listen from device` switch arms the backend listener. The backend auto-disarms it after one accepted device detection or after `DEVICE_EVENTS_ARM_TTL_MS`, so a running Arduino cannot accidentally create duplicate demo incidents. Calls are only started by the dashboard operator action.
 
 Telemetry follows the same transport and station identity, but it is stored as sensor context instead of as a detection. Devices post periodic readings to `/api/device/telemetry`; the backend stores them, broadcasts `telemetry.created`, and the dashboard shows the latest reading per station.
+
+Live camera viewing is separate from detection ingestion. Dashboard stream sessions are short-lived and in memory only. Device frames are not persisted; only detection snapshots are saved to disk for later evidence review. The device keeps one persistent multipart upload open while streaming; the browser consumes frames through a separate multipart image stream, while Socket.IO carries only stream metadata and box coordinates. Button B on the Arduino controls whether box metadata is sent and displayed; visual boxes are drawn by the dashboard overlay while inference remains on-device.
 
 ## Proposed Monorepo Layout
 
@@ -89,6 +93,14 @@ GET  /health
 POST /api/device/events
 GET  /api/device/listening
 PUT  /api/device/listening
+GET  /api/device/stream-state
+POST /api/device/stream-frames
+POST /api/device/stream-frames/pipe
+POST /api/device/stream-frames/raw
+GET  /api/streams/:stationId
+GET  /api/streams/:stationId/image-stream
+POST /api/streams/:stationId/start
+POST /api/streams/:stationId/stop
 GET  /api/events
 GET  /api/telemetry
 GET  /api/telemetry/latest
@@ -159,6 +171,8 @@ Suggested realtime events:
 detection.created
 telemetry.created
 telemetry.cleared
+stream.session.updated
+stream.frame
 device.listener.updated
 alert.created
 action.created

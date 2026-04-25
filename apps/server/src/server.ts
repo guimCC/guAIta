@@ -1,12 +1,16 @@
 import cors from "@fastify/cors";
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
+import { randomUUID } from "node:crypto";
 import { createReadStream, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import type { ServerResponse } from "node:http";
 import { join } from "node:path";
+import type { Readable } from "node:stream";
 import { Server as SocketServer } from "socket.io";
 import {
   AcknowledgeCivilProtectionCallInputSchema,
   StartCivilProtectionCallInputSchema,
   DetectionEventInputSchema,
+  LiveStreamFrameInputSchema,
   SOCKET_EVENTS,
   TelemetryReadingInputSchema,
   type AcknowledgeCivilProtectionCallInput,
@@ -16,6 +20,9 @@ import {
   type DetectionEventInput,
   type DetectionSnapshotInput,
   type DetectionSource,
+  type LiveStreamFrame,
+  type LiveStreamFrameInput,
+  type LiveStreamSession,
   type Station,
   type TelemetryReading,
   type TelemetryReadingInput
@@ -35,6 +42,13 @@ function isDuplicateEventError(error: unknown): boolean {
 }
 
 const MAX_SNAPSHOT_BYTES = 1_000_000;
+const MAX_STREAM_FRAME_BYTES = 750_000;
+const LIVE_STREAM_PIPE_BODY_LIMIT_BYTES = 250_000_000;
+const LIVE_STREAM_TARGET_FPS = 2;
+const LIVE_STREAM_FRAME_INTERVAL_MS = Math.round(1000 / LIVE_STREAM_TARGET_FPS);
+const LIVE_STREAM_SESSION_TTL_MS = 60_000;
+const MJPEG_BOUNDARY = "guaita-frame";
+const LIVE_IMAGE_UPLOAD_BOUNDARY = "guaita-upload-frame";
 const ACTIVE_ESCALATION_CALL_STATUSES = new Set<CallStatus>(["requested", "calling", "completed"]);
 const REUSABLE_CALL_STATUSES = new Set<CallStatus>(["requested", "calling", "completed", "acknowledged"]);
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -57,7 +71,50 @@ interface DeviceListenerState {
   expiresAt?: string;
 }
 
+interface DecodedLiveStreamFrame {
+  imageBuffer: Buffer;
+}
+
+interface LiveStreamFrameMetadata {
+  stationId: string;
+  capturedAt?: string;
+  boundingBoxesEnabled?: boolean;
+  frameWidth?: number;
+  frameHeight?: number;
+  boxes?: LiveStreamFrame["boxes"];
+}
+
+interface CreatedLiveStreamFrame {
+  frame: LiveStreamFrame;
+  imageBuffer: Buffer;
+}
+
+interface MjpegClient {
+  id: string;
+  stationId: string;
+  response: ServerResponse;
+}
+
+interface LiveImageUploadPart {
+  imageBuffer: Buffer;
+  capturedAt?: string;
+  boundingBoxesEnabled?: boolean;
+  frameWidth?: number;
+  frameHeight?: number;
+  boxes?: LiveStreamFrame["boxes"];
+}
+
 class SnapshotValidationError extends Error {
+  constructor(
+    readonly code: string,
+    readonly statusCode: number,
+    message: string
+  ) {
+    super(message);
+  }
+}
+
+class LiveStreamFrameValidationError extends Error {
   constructor(
     readonly code: string,
     readonly statusCode: number,
@@ -83,6 +140,11 @@ export async function buildServer() {
   });
   let deviceListenerState = createDeviceListenerState(false, "server.start");
   let deviceListenerTimer: ReturnType<typeof setTimeout> | undefined;
+  const liveStreamSessions = new Map<string, LiveStreamSession>();
+  const liveStreamImageClients = new Map<string, Map<string, MjpegClient>>();
+  const liveStreamExpiryTimer = setInterval(() => {
+    expireLiveStreamSessions();
+  }, 2_000);
 
   if (config.demoResetOnStart) {
     const reset = db.resetRuntimeData();
@@ -148,16 +210,200 @@ export async function buildServer() {
     methods: ["GET", "POST", "PUT", "DELETE"]
   });
 
+  for (const contentType of ["image/jpeg", "image/png"]) {
+    app.addContentTypeParser(contentType, { parseAs: "buffer" }, (_request, body, done) => {
+      done(null, body);
+    });
+  }
+  app.addContentTypeParser(/^multipart\/x-mixed-replace(?:;.*)?$/i, (_request, payload, done) => {
+    done(null, payload);
+  });
+
   setDeviceListenerEnabled(config.deviceEventsEnabledOnStart, "server.start");
 
   app.addHook("onClose", async () => {
     if (deviceListenerTimer) {
       clearTimeout(deviceListenerTimer);
     }
+    clearInterval(liveStreamExpiryTimer);
+    closeAllLiveImageStreamClients();
     scenarioEngine.stop();
     io.close();
     db.close();
   });
+
+  function inactiveLiveStreamSession(stationId: string): LiveStreamSession {
+    return {
+      stationId,
+      active: false,
+      targetFps: LIVE_STREAM_TARGET_FPS,
+      frameIntervalMs: LIVE_STREAM_FRAME_INTERVAL_MS,
+      updatedAt: new Date().toISOString()
+    };
+  }
+
+  function getLiveStreamSession(stationId: string): LiveStreamSession {
+    expireLiveStreamSessions();
+    return liveStreamSessions.get(stationId) ?? inactiveLiveStreamSession(stationId);
+  }
+
+  function startLiveStreamSession(stationId: string): LiveStreamSession {
+    const now = new Date();
+    const session: LiveStreamSession = {
+      ...liveStreamSessions.get(stationId),
+      stationId,
+      active: true,
+      targetFps: LIVE_STREAM_TARGET_FPS,
+      frameIntervalMs: LIVE_STREAM_FRAME_INTERVAL_MS,
+      requestedAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+      expiresAt: new Date(now.getTime() + LIVE_STREAM_SESSION_TTL_MS).toISOString()
+    };
+
+    liveStreamSessions.set(stationId, session);
+    io.emit(SOCKET_EVENTS.streamSessionUpdated, session);
+    return session;
+  }
+
+  function stopLiveStreamSession(stationId: string): LiveStreamSession {
+    const existing = liveStreamSessions.get(stationId);
+    const session: LiveStreamSession = {
+      ...(existing ?? inactiveLiveStreamSession(stationId)),
+      stationId,
+      active: false,
+      targetFps: LIVE_STREAM_TARGET_FPS,
+      frameIntervalMs: LIVE_STREAM_FRAME_INTERVAL_MS,
+      updatedAt: new Date().toISOString()
+    };
+    delete session.expiresAt;
+
+    liveStreamSessions.set(stationId, session);
+    closeLiveImageStreamClients(stationId);
+    io.emit(SOCKET_EVENTS.streamSessionUpdated, session);
+    return session;
+  }
+
+  function stopAllLiveStreamSessions(): void {
+    for (const stationId of liveStreamSessions.keys()) {
+      stopLiveStreamSession(stationId);
+    }
+  }
+
+  function expireLiveStreamSessions(): void {
+    const nowMs = Date.now();
+
+    for (const [stationId, session] of liveStreamSessions) {
+      if (!session.active || !session.expiresAt || new Date(session.expiresAt).getTime() > nowMs) {
+        continue;
+      }
+
+      const expiredSession: LiveStreamSession = {
+        ...session,
+        active: false,
+        updatedAt: new Date().toISOString()
+      };
+      delete expiredSession.expiresAt;
+      liveStreamSessions.set(stationId, expiredSession);
+      closeLiveImageStreamClients(stationId);
+      io.emit(SOCKET_EVENTS.streamSessionUpdated, expiredSession);
+    }
+  }
+
+  function updateLiveStreamSessionAfterFrame(frame: LiveStreamFrame): LiveStreamSession {
+    const existing = liveStreamSessions.get(frame.stationId) ?? inactiveLiveStreamSession(frame.stationId);
+    const session: LiveStreamSession = {
+      ...existing,
+      updatedAt: frame.receivedAt,
+      lastFrameAt: frame.receivedAt,
+      lastFrameId: frame.frameId,
+      lastBoundingBoxesEnabled: frame.boundingBoxesEnabled
+    };
+
+    liveStreamSessions.set(frame.stationId, session);
+    io.emit(SOCKET_EVENTS.streamSessionUpdated, session);
+    return session;
+  }
+
+  function addLiveImageStreamClient(stationId: string, response: ServerResponse): MjpegClient {
+    const client: MjpegClient = {
+      id: randomUUID(),
+      stationId,
+      response
+    };
+    const stationClients = liveStreamImageClients.get(stationId) ?? new Map<string, MjpegClient>();
+    stationClients.set(client.id, client);
+    liveStreamImageClients.set(stationId, stationClients);
+    return client;
+  }
+
+  function removeLiveImageStreamClient(client: MjpegClient): void {
+    const stationClients = liveStreamImageClients.get(client.stationId);
+    if (!stationClients) {
+      return;
+    }
+
+    stationClients.delete(client.id);
+    if (!stationClients.size) {
+      liveStreamImageClients.delete(client.stationId);
+    }
+  }
+
+  function closeLiveImageStreamClients(stationId: string): void {
+    const stationClients = liveStreamImageClients.get(stationId);
+    if (!stationClients) {
+      return;
+    }
+
+    for (const client of stationClients.values()) {
+      if (!client.response.destroyed && !client.response.writableEnded) {
+        client.response.end();
+      }
+    }
+    liveStreamImageClients.delete(stationId);
+  }
+
+  function closeAllLiveImageStreamClients(): void {
+    for (const stationId of [...liveStreamImageClients.keys()]) {
+      closeLiveImageStreamClients(stationId);
+    }
+  }
+
+  function broadcastLiveImageStreamFrame(frame: LiveStreamFrame, imageBuffer: Buffer): void {
+    const stationClients = liveStreamImageClients.get(frame.stationId);
+    if (!stationClients?.size) {
+      return;
+    }
+
+    const header = [
+      `--${MJPEG_BOUNDARY}`,
+      `Content-Type: ${frame.contentType}`,
+      `Content-Length: ${imageBuffer.length}`,
+      `X-Guaita-Frame-Id: ${frame.frameId}`,
+      "",
+      ""
+    ].join("\r\n");
+
+    for (const client of [...stationClients.values()]) {
+      if (client.response.destroyed || client.response.writableEnded) {
+        removeLiveImageStreamClient(client);
+        continue;
+      }
+
+      try {
+        client.response.write(header);
+        client.response.write(imageBuffer);
+        client.response.write("\r\n");
+      } catch {
+        removeLiveImageStreamClient(client);
+      }
+    }
+  }
+
+  function publishLiveStreamFrame(frame: LiveStreamFrame, imageBuffer: Buffer): void {
+    updateLiveStreamSessionAfterFrame(frame);
+    broadcastLiveImageStreamFrame(frame, imageBuffer);
+    io.emit(SOCKET_EVENTS.streamFrame, frame);
+  }
 
   app.get("/health", async () => ({
     ok: true,
@@ -215,9 +461,124 @@ export async function buildServer() {
     telemetry: db.listLatestTelemetryReadings()
   }));
 
+  app.get("/api/streams/:stationId", async (request: FastifyRequest<{ Params: { stationId: string } }>, reply) => {
+    if (!db.getStation(request.params.stationId)) {
+      return reply.code(404).send({
+        ok: false,
+        error: "unknown_station",
+        stationId: request.params.stationId
+      });
+    }
+
+    return {
+      ok: true,
+      stream: getLiveStreamSession(request.params.stationId)
+    };
+  });
+
+  app.post("/api/streams/:stationId/start", async (request: FastifyRequest<{ Params: { stationId: string } }>, reply) => {
+    if (!db.getStation(request.params.stationId)) {
+      return reply.code(404).send({
+        ok: false,
+        error: "unknown_station",
+        stationId: request.params.stationId
+      });
+    }
+
+    return {
+      ok: true,
+      stream: startLiveStreamSession(request.params.stationId)
+    };
+  });
+
+  app.post("/api/streams/:stationId/stop", async (request: FastifyRequest<{ Params: { stationId: string } }>, reply) => {
+    if (!db.getStation(request.params.stationId)) {
+      return reply.code(404).send({
+        ok: false,
+        error: "unknown_station",
+        stationId: request.params.stationId
+      });
+    }
+
+    return {
+      ok: true,
+      stream: stopLiveStreamSession(request.params.stationId)
+    };
+  });
+
+  function openLiveImageStream(
+    request: FastifyRequest<{ Params: { stationId: string } }>,
+    reply: FastifyReply
+  ): void {
+    const stationId = request.params.stationId;
+
+    if (!db.getStation(stationId)) {
+      reply.code(404).send({
+        ok: false,
+        error: "unknown_station",
+        stationId
+      });
+      return;
+    }
+
+    reply.hijack();
+    const response = reply.raw;
+    response.writeHead(200, {
+      "Content-Type": `multipart/x-mixed-replace; boundary=${MJPEG_BOUNDARY}`,
+      "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+      "Pragma": "no-cache",
+      "Expires": "0",
+      "Connection": "keep-alive",
+      "X-Accel-Buffering": "no"
+    });
+    response.flushHeaders();
+
+    const client = addLiveImageStreamClient(stationId, response);
+    const cleanup = () => {
+      removeLiveImageStreamClient(client);
+    };
+    request.raw.on("close", cleanup);
+    response.on("error", cleanup);
+  }
+
+  app.get("/api/streams/:stationId/image-stream", openLiveImageStream);
+  app.get("/api/streams/:stationId/mjpeg", openLiveImageStream);
+
   app.get("/api/device/listening", async () => ({
     deviceListening: deviceListenerState
   }));
+
+  app.get("/api/device/stream-state", async (request: FastifyRequest<{ Querystring: { stationId?: string } }>, reply) => {
+    const authorization = request.headers.authorization;
+
+    if (authorization !== `Bearer ${config.deviceToken}`) {
+      return reply.code(401).send({
+        ok: false,
+        error: "unauthorized"
+      });
+    }
+
+    const stationId = request.query.stationId?.trim();
+    if (!stationId) {
+      return reply.code(400).send({
+        ok: false,
+        error: "missing_station_id"
+      });
+    }
+
+    if (!db.getStation(stationId)) {
+      return reply.code(404).send({
+        ok: false,
+        error: "unknown_station",
+        stationId
+      });
+    }
+
+    return {
+      ok: true,
+      stream: getLiveStreamSession(stationId)
+    };
+  });
 
   app.put("/api/device/listening", async (request, reply) => {
     const body = request.body as { enabled?: unknown } | undefined;
@@ -239,6 +600,7 @@ export async function buildServer() {
   app.post("/api/demo/reset", async () => {
     const reset = db.resetRuntimeData();
     emitRuntimeReset(reset);
+    stopAllLiveStreamSessions();
     const scenario = scenarioEngine.reset();
 
     return {
@@ -578,6 +940,238 @@ export async function buildServer() {
 
     return createTelemetryReading(request, reply, "device", db, io);
   });
+
+  app.post("/api/device/stream-frames", async (request, reply) => {
+    const authorization = request.headers.authorization;
+
+    if (authorization !== `Bearer ${config.deviceToken}`) {
+      return reply.code(401).send({
+        ok: false,
+        error: "unauthorized"
+      });
+    }
+
+    const parsed = LiveStreamFrameInputSchema.safeParse(request.body);
+
+    if (!parsed.success) {
+      return reply.code(400).send({
+        ok: false,
+        error: "invalid_stream_frame",
+        issues: parsed.error.flatten()
+      });
+    }
+
+    const station = db.getStation(parsed.data.stationId);
+    if (!station) {
+      return reply.code(404).send({
+        ok: false,
+        error: "unknown_station",
+        stationId: parsed.data.stationId
+      });
+    }
+
+    const session = getLiveStreamSession(parsed.data.stationId);
+    if (!session.active) {
+      return reply.code(202).send({
+        ok: true,
+        ignored: true,
+        reason: "stream_inactive",
+        stream: session
+      });
+    }
+
+    try {
+      const { frame, imageBuffer } = createLiveStreamFrameFromJsonInput(parsed.data);
+      publishLiveStreamFrame(frame, imageBuffer);
+
+      return reply.code(201).send({
+        ok: true,
+        frameId: frame.frameId,
+        stream: getLiveStreamSession(frame.stationId)
+      });
+    } catch (error) {
+      if (error instanceof LiveStreamFrameValidationError) {
+        return reply.code(error.statusCode).send({
+          ok: false,
+          error: error.code,
+          message: error.message
+        });
+      }
+
+      throw error;
+    }
+  });
+
+  app.post(
+    "/api/device/stream-frames/raw",
+    async (
+      request: FastifyRequest<{
+        Querystring: {
+          stationId?: string;
+          capturedAt?: string;
+          boundingBoxesEnabled?: string;
+          frameWidth?: string;
+          frameHeight?: string;
+        };
+      }>,
+      reply
+    ) => {
+      const authorization = request.headers.authorization;
+
+      if (authorization !== `Bearer ${config.deviceToken}`) {
+        return reply.code(401).send({
+          ok: false,
+          error: "unauthorized"
+        });
+      }
+
+      const stationId = request.query.stationId?.trim();
+      if (!stationId) {
+        return reply.code(400).send({
+          ok: false,
+          error: "missing_station_id"
+        });
+      }
+
+      const station = db.getStation(stationId);
+      if (!station) {
+        return reply.code(404).send({
+          ok: false,
+          error: "unknown_station",
+          stationId
+        });
+      }
+
+      const session = getLiveStreamSession(stationId);
+      if (!session.active) {
+        return reply.code(202).send({
+          ok: true,
+          ignored: true,
+          reason: "stream_inactive",
+          stream: session
+        });
+      }
+
+      try {
+        const imageBuffer = request.body instanceof Buffer ? request.body : Buffer.from([]);
+        const frame = createLiveStreamFrameFromBuffer(
+          {
+            stationId,
+            capturedAt: normalizeOptionalIsoDate(request.query.capturedAt),
+            boundingBoxesEnabled: readBooleanString(request.query.boundingBoxesEnabled),
+            frameWidth: readPositiveIntegerString(request.query.frameWidth),
+            frameHeight: readPositiveIntegerString(request.query.frameHeight),
+            boxes: parseLiveStreamBoxesHeader(request.headers["x-guaita-boxes"])
+          },
+          imageBuffer
+        );
+        publishLiveStreamFrame(frame, imageBuffer);
+
+        return reply.code(201).send({
+          ok: true,
+          frameId: frame.frameId,
+          stream: getLiveStreamSession(frame.stationId)
+        });
+      } catch (error) {
+        if (error instanceof LiveStreamFrameValidationError) {
+          return reply.code(error.statusCode).send({
+            ok: false,
+            error: error.code,
+            message: error.message
+          });
+        }
+
+        throw error;
+      }
+    }
+  );
+
+  app.post<{
+    Querystring: {
+      stationId?: string;
+    };
+  }>(
+    "/api/device/stream-frames/pipe",
+    {
+      bodyLimit: LIVE_STREAM_PIPE_BODY_LIMIT_BYTES
+    },
+    async (request, reply) => {
+      const authorization = request.headers.authorization;
+
+      if (authorization !== `Bearer ${config.deviceToken}`) {
+        return reply.code(401).send({
+          ok: false,
+          error: "unauthorized"
+        });
+      }
+
+      const stationId = request.query.stationId?.trim();
+      if (!stationId) {
+        return reply.code(400).send({
+          ok: false,
+          error: "missing_station_id"
+        });
+      }
+
+      const station = db.getStation(stationId);
+      if (!station) {
+        return reply.code(404).send({
+          ok: false,
+          error: "unknown_station",
+          stationId
+        });
+      }
+
+      if (!isReadableStream(request.body)) {
+        return reply.code(400).send({
+          ok: false,
+          error: "invalid_stream_pipe",
+          message: "Expected a multipart frame stream body."
+        });
+      }
+
+      let acceptedFrames = 0;
+      let ignoredFrames = 0;
+      let invalidFrames = 0;
+
+      for await (const part of parseLiveImageUploadStream(request.body)) {
+        const session = getLiveStreamSession(stationId);
+        if (!session.active) {
+          ignoredFrames += 1;
+          continue;
+        }
+
+        try {
+          const frame = createLiveStreamFrameFromBuffer(
+            {
+              stationId,
+              capturedAt: part.capturedAt,
+              boundingBoxesEnabled: part.boundingBoxesEnabled,
+              frameWidth: part.frameWidth,
+              frameHeight: part.frameHeight,
+              boxes: part.boxes
+            },
+            part.imageBuffer
+          );
+          publishLiveStreamFrame(frame, part.imageBuffer);
+          acceptedFrames += 1;
+        } catch (error) {
+          invalidFrames += 1;
+          if (!(error instanceof LiveStreamFrameValidationError)) {
+            throw error;
+          }
+        }
+      }
+
+      return reply.code(200).send({
+        ok: true,
+        acceptedFrames,
+        ignoredFrames,
+        invalidFrames,
+        stream: getLiveStreamSession(stationId)
+      });
+    }
+  );
 
   app.post("/api/manual/events", async (request, reply) => {
     return createDetection(request, reply, "manual", db, io, () => {
@@ -973,6 +1567,216 @@ function storeDetection(input: DetectionEventInput, db: GuaitaDatabase, io: Sock
     event,
     severity
   };
+}
+
+function createLiveStreamFrameFromJsonInput(input: LiveStreamFrameInput): CreatedLiveStreamFrame {
+  const decodedFrame = decodeLiveStreamFrame(input);
+  const frame = createLiveStreamFrameFromBuffer(
+    {
+      stationId: input.stationId,
+      capturedAt: input.capturedAt ?? undefined,
+      boundingBoxesEnabled: input.boundingBoxesEnabled,
+      frameWidth: input.frameWidth,
+      frameHeight: input.frameHeight,
+      boxes: input.boxes ?? []
+    },
+    decodedFrame.imageBuffer
+  );
+
+  return {
+    frame,
+    imageBuffer: decodedFrame.imageBuffer
+  };
+}
+
+function createLiveStreamFrameFromBuffer(metadata: LiveStreamFrameMetadata, imageBuffer: Buffer): LiveStreamFrame {
+  const contentType = assertValidLiveStreamImage(imageBuffer);
+  const receivedAt = new Date().toISOString();
+
+  return {
+    stationId: metadata.stationId,
+    frameId: `frm_${Date.now().toString(36)}_${randomUUID().slice(0, 8)}`,
+    capturedAt: metadata.capturedAt ?? receivedAt,
+    receivedAt,
+    contentType,
+    boundingBoxesEnabled: metadata.boundingBoxesEnabled ?? false,
+    frameWidth: metadata.frameWidth,
+    frameHeight: metadata.frameHeight,
+    boxes: metadata.boxes ?? []
+  };
+}
+
+function decodeLiveStreamFrame(input: LiveStreamFrameInput): DecodedLiveStreamFrame {
+  const base64Data = input.data
+    .trim()
+    .replace(/^data:image\/jpeg;base64,/i, "")
+    .replace(/\s/g, "");
+
+  if (!base64Data || base64Data.length % 4 === 1 || !/^[A-Za-z0-9+/]*={0,2}$/.test(base64Data)) {
+    throw new LiveStreamFrameValidationError("invalid_stream_frame", 400, "Stream frame data must be valid base64 image bytes.");
+  }
+
+  const paddedData = base64Data.padEnd(Math.ceil(base64Data.length / 4) * 4, "=");
+  const imageBuffer = Buffer.from(paddedData, "base64");
+
+  assertValidLiveStreamImage(imageBuffer);
+
+  return {
+    imageBuffer
+  };
+}
+
+function assertValidLiveStreamImage(imageBuffer: Buffer): LiveStreamFrame["contentType"] {
+  if (imageBuffer.length === 0) {
+    throw new LiveStreamFrameValidationError("invalid_stream_frame", 400, "Stream frame image is empty.");
+  }
+
+  if (imageBuffer.length > MAX_STREAM_FRAME_BYTES) {
+    throw new LiveStreamFrameValidationError("stream_frame_too_large", 413, "Stream frame image must be 750 KB or smaller.");
+  }
+
+  if (imageBuffer[0] !== 0xff || imageBuffer[1] !== 0xd8) {
+    if (!imageBuffer.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) {
+      throw new LiveStreamFrameValidationError("invalid_stream_frame", 400, "Stream frame must be a JPEG or PNG image.");
+    }
+
+    return "image/png";
+  }
+
+  return "image/jpeg";
+}
+
+function readBooleanString(value: string | undefined): boolean | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  return ["1", "true", "yes", "on"].includes(value.toLowerCase());
+}
+
+function readPositiveIntegerString(value: string | undefined): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function normalizeOptionalIsoDate(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  return Number.isNaN(new Date(value).getTime()) ? undefined : value;
+}
+
+function parseLiveStreamBoxesHeader(value: string | string[] | undefined): LiveStreamFrameMetadata["boxes"] {
+  const rawValue = Array.isArray(value) ? value[0] : value;
+  if (!rawValue) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(rawValue) as unknown;
+    const input = LiveStreamFrameInputSchema.pick({ boxes: true }).safeParse({ boxes: parsed });
+    return input.success ? input.data.boxes ?? [] : [];
+  } catch {
+    return [];
+  }
+}
+
+function isReadableStream(value: unknown): value is Readable {
+  return Boolean(value && typeof (value as Readable)[Symbol.asyncIterator] === "function");
+}
+
+async function* parseLiveImageUploadStream(payload: AsyncIterable<Buffer | string>): AsyncGenerator<LiveImageUploadPart> {
+  const boundary = Buffer.from(`--${LIVE_IMAGE_UPLOAD_BOUNDARY}`);
+  const headerSeparator = Buffer.from("\r\n\r\n");
+  const lineBreak = Buffer.from("\r\n");
+  let buffer = Buffer.alloc(0);
+
+  for await (const chunk of payload) {
+    const chunkBuffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    buffer = Buffer.concat([buffer, chunkBuffer]);
+
+    for (;;) {
+      const boundaryIndex = buffer.indexOf(boundary);
+      if (boundaryIndex < 0) {
+        const retainedLength = Math.min(buffer.length, boundary.length + 4);
+        buffer = buffer.subarray(buffer.length - retainedLength);
+        break;
+      }
+
+      if (boundaryIndex > 0) {
+        buffer = buffer.subarray(boundaryIndex);
+      }
+
+      if (buffer.length < boundary.length + lineBreak.length) {
+        break;
+      }
+
+      const boundaryEnd = boundary.length;
+      if (buffer.subarray(boundaryEnd, boundaryEnd + 2).toString("utf8") === "--") {
+        return;
+      }
+
+      if (!buffer.subarray(boundaryEnd, boundaryEnd + lineBreak.length).equals(lineBreak)) {
+        buffer = buffer.subarray(boundary.length);
+        continue;
+      }
+
+      const headerStart = boundaryEnd + lineBreak.length;
+      const headerEnd = buffer.indexOf(headerSeparator, headerStart);
+      if (headerEnd < 0) {
+        break;
+      }
+
+      const headers = parseLiveImageUploadHeaders(buffer.subarray(headerStart, headerEnd).toString("utf8"));
+      const contentLength = Number(headers.get("content-length"));
+      if (!Number.isInteger(contentLength) || contentLength <= 0 || contentLength > MAX_STREAM_FRAME_BYTES) {
+        buffer = buffer.subarray(headerEnd + headerSeparator.length);
+        continue;
+      }
+
+      const bodyStart = headerEnd + headerSeparator.length;
+      const bodyEnd = bodyStart + contentLength;
+      if (buffer.length < bodyEnd) {
+        break;
+      }
+
+      const imageBuffer = buffer.subarray(bodyStart, bodyEnd);
+      let nextOffset = bodyEnd;
+      if (buffer.subarray(nextOffset, nextOffset + lineBreak.length).equals(lineBreak)) {
+        nextOffset += lineBreak.length;
+      }
+      buffer = buffer.subarray(nextOffset);
+
+      yield {
+        imageBuffer,
+        capturedAt: normalizeOptionalIsoDate(headers.get("x-guaita-captured-at")),
+        boundingBoxesEnabled: readBooleanString(headers.get("x-guaita-bounding-boxes-enabled")),
+        frameWidth: readPositiveIntegerString(headers.get("x-guaita-frame-width")),
+        frameHeight: readPositiveIntegerString(headers.get("x-guaita-frame-height")),
+        boxes: parseLiveStreamBoxesHeader(headers.get("x-guaita-boxes"))
+      };
+    }
+  }
+}
+
+function parseLiveImageUploadHeaders(rawHeaders: string): Map<string, string> {
+  const headers = new Map<string, string>();
+
+  for (const line of rawHeaders.split("\r\n")) {
+    const separatorIndex = line.indexOf(":");
+    if (separatorIndex < 0) {
+      continue;
+    }
+
+    headers.set(line.slice(0, separatorIndex).trim().toLowerCase(), line.slice(separatorIndex + 1).trim());
+  }
+
+  return headers;
 }
 
 function snapshotBaseNameForEvent(eventId: string): string {

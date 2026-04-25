@@ -133,6 +133,57 @@ If every sensor reading field is missing or `null`, the server accepts the reque
 }
 ```
 
+## Live Stream Endpoints
+
+The dashboard can request low-rate live camera frames from a station. The Arduino does not expose an inbound stream. It polls the server for stream state and uploads JPEG or PNG frames only while a dashboard session is active.
+
+Device polling:
+
+```text
+GET {SERVER_URL}/api/device/stream-state?stationId={STATION_ID}
+Authorization: Bearer {DEVICE_TOKEN}
+```
+
+Primary frame upload:
+
+```text
+POST {SERVER_URL}/api/device/stream-frames/pipe?stationId={STATION_ID}
+Authorization: Bearer {DEVICE_TOKEN}
+Content-Type: multipart/x-mixed-replace; boundary=guaita-upload-frame
+```
+
+Body: a persistent multipart stream of raw image parts. JPEG is preferred; PNG is accepted. The Arduino Python sender attempts to convert PNG bytes to smaller JPEG frames when Pillow is installed.
+
+Fallback single-frame upload:
+
+```text
+POST {SERVER_URL}/api/device/stream-frames/raw?stationId={STATION_ID}
+Authorization: Bearer {DEVICE_TOKEN}
+Content-Type: image/jpeg or image/png
+```
+
+Body: raw JPEG or PNG bytes. The server sniffs the actual image signature before relaying it to the dashboard image stream.
+
+The dashboard renders frames through `GET /api/streams/{stationId}/image-stream`, a multipart image stream consumed directly by the browser image element. Socket.IO carries stream status and bounding-box metadata only.
+
+The server still accepts the older JSON/base64 endpoint at `/api/device/stream-frames`, but the Arduino app uses the persistent pipe for lower latency.
+
+Legacy JSON payload:
+
+```json
+{
+  "stationId": "collserola-control-02",
+  "capturedAt": "2026-04-26T08:10:01.000Z",
+  "contentType": "image/png",
+  "encoding": "base64",
+  "data": "iVBORw0KGgoAAAANSUhEUgAA...",
+  "boundingBoxesEnabled": false,
+  "boxes": []
+}
+```
+
+See [Device Live Stream Contract](device-live-stream-contract.md) for limits and session behavior.
+
 ## Minimum Payload
 
 This is enough for the hardware team to start sending real detections:
@@ -189,6 +240,7 @@ If `eventId` or `observedAt` are missing, the server may generate them.
 - `direction`: optional movement estimate such as `towards_city`, `towards_forest`, `left_to_right`, or `unknown`.
 - `snapshot`: optional JPEG or PNG snapshot encoded as base64 in the same JSON request. See [Device Image Snapshot Contract](device-image-snapshot-contract.md).
 - `imageUrl`: server-generated URL returned when a snapshot is accepted. The device should not send this field.
+- live frames: separate from detection snapshots. Frames are uploaded only to `/api/device/stream-frames/pipe` or `/api/device/stream-frames/raw` while a dashboard stream session is active.
 - `temperatureC`: optional temperature reading.
 - `humidityPct`: optional humidity reading from `0` to `100`.
 - `lightLux`: optional non-negative light reading.
@@ -211,6 +263,8 @@ Use this first for the physical Arduino UNO Q demo device:
 ```text
 collserola-control-02
 ```
+
+For hackathon speed, `SERVER_URL`, `DEVICE_TOKEN`, and `STATION_ID` are currently code constants in `guaita-arduino/python/main.py`.
 
 Other seeded stations currently available for simulation/demo work:
 
