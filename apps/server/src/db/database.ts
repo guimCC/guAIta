@@ -31,6 +31,7 @@ export class GuaitaDatabase {
     this.sqlite.pragma("journal_mode = WAL");
     this.initialize();
     this.seedStaticData();
+    this.seedHistoricalData();
   }
 
   close(): void {
@@ -289,6 +290,104 @@ export class GuaitaDatabase {
 
       for (const zone of seedZones) {
         insertZone.run({ id: zone.id, payload: JSON.stringify(zone) });
+      }
+    });
+
+    seed();
+  }
+
+  private seedHistoricalData(): void {
+    const existingEvents = this.sqlite.prepare("select 1 from events limit 1").get();
+    if (existingEvents) {
+      return;
+    }
+
+    const stations = this.listStations();
+    if (stations.length === 0) return;
+
+    const now = new Date();
+    const startTime = new Date(now.getTime() - 48 * 60 * 60_000); // 48 hours ago
+
+    const sortedStations = [...stations].sort((a, b) => b.latitude - a.latitude);
+    const northStations = sortedStations.slice(0, Math.floor(stations.length / 2));
+
+    const insertTelemetry = this.sqlite.prepare(
+      `insert into telemetry_readings (telemetry_id, station_id, observed_at, source, payload, created_at)
+       values (@telemetryId, @stationId, @observedAt, @source, @payload, @createdAt)`
+    );
+
+    const insertEvent = this.sqlite.prepare(
+      `insert into events (event_id, station_id, observed_at, source, payload, created_at)
+       values (@eventId, @stationId, @observedAt, @source, @payload, @createdAt)`
+    );
+
+    const seed = this.sqlite.transaction(() => {
+      for (let h = 0; h < 48; h++) {
+        const currentHourTime = new Date(startTime.getTime() + h * 60 * 60_000);
+        const hour = currentHourTime.getHours();
+        const isDaylight = hour >= 7 && hour <= 20;
+        
+        for (const station of stations) {
+          const isNorth = northStations.includes(station);
+          let temp = 15 + Math.sin((hour - 6) * Math.PI / 12) * 10;
+          if (isNorth) temp -= 3;
+          if (!isDaylight) temp -= 5;
+          
+          const humidity = 60 + Math.random() * 20;
+
+          const telemetryId = `hist_tel_${h}_${station.id}`;
+          const telemetry: TelemetryReading = {
+            telemetryId,
+            stationId: station.id,
+            observedAt: currentHourTime.toISOString(),
+            source: "scenario",
+            temperatureC: temp + (Math.random() * 2 - 1),
+            humidityPct: humidity,
+            lightLux: isDaylight ? (500 + Math.random() * 500) : (5 + Math.random() * 10),
+            batteryPct: 90 + Math.random() * 10
+          };
+          
+          insertTelemetry.run({
+            telemetryId,
+            stationId: station.id,
+            observedAt: telemetry.observedAt,
+            source: telemetry.source,
+            payload: JSON.stringify(telemetry),
+            createdAt: now.toISOString()
+          });
+
+          let detectionProb = 0.05;
+          if (!isDaylight) detectionProb = 0.15;
+          if (isDaylight && Math.random() < 0.1) detectionProb = 0.1;
+          if (temp > 22 && isNorth) detectionProb *= 2;
+
+          if (Math.random() < detectionProb) {
+            const count = Math.random() > 0.8 ? Math.floor(Math.random() * 5) + 2 : 1;
+            const eventId = `hist_evt_${h}_${station.id}`;
+            const event: DetectionEvent = {
+              eventId,
+              stationId: station.id,
+              observedAt: currentHourTime.toISOString(),
+              source: "scenario",
+              species: "wild_boar",
+              confidence: 0.7 + Math.random() * 0.25,
+              count,
+              direction: Math.random() > 0.7 ? "towards_city" : "towards_forest",
+              temperatureC: temp,
+              humidityPct: humidity,
+              lightLux: telemetry.lightLux
+            };
+
+            insertEvent.run({
+              eventId,
+              stationId: station.id,
+              observedAt: event.observedAt,
+              source: event.source,
+              payload: JSON.stringify(event),
+              createdAt: now.toISOString()
+            });
+          }
+        }
       }
     });
 
