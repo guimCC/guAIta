@@ -35,8 +35,9 @@ flowchart LR
 5. The action recommender creates one or more recommended actions.
 6. Socket.IO broadcasts the new detection, alert, and action to connected dashboards.
 7. The frontend updates the map, sidebars, metrics, and event graph.
-8. If the operator escalates, the backend stores a Civil Protection call record and optionally starts an ElevenLabs outbound call with the incident packet.
-9. ElevenLabs acknowledgement and post-call webhooks update the stored call and broadcast `call.updated`.
+8. Device detections and the manual Edge AI simulation are escalation-worthy: the backend stores one Civil Protection call record, optionally starts an ElevenLabs outbound call with the incident packet, and reuses the active call instead of creating duplicates.
+9. Scenario detections remain ambient context in the map and timeline; they do not replace the primary call-worthy alert.
+10. ElevenLabs acknowledgement and post-call webhooks update the stored call and broadcast `call.updated`.
 
 Telemetry follows the same transport and station identity, but it is stored as sensor context instead of as a detection. Devices post periodic readings to `/api/device/telemetry`; the backend stores them, broadcasts `telemetry.created`, and the dashboard shows the latest reading per station.
 
@@ -171,7 +172,8 @@ Scenario time is virtual and controllable. Device events are real-time.
 
 - Scenario events follow `currentTimeMs`.
 - Scenario can be paused, resumed, advanced, or reset.
-- Live Arduino/device events should still enter the system even when scenario time is paused.
+- A live Arduino/device event pauses a running scenario and starts the escalation path.
+- Additional device detections are ignored while an active device call is `requested`, `calling`, or `completed`.
 - The UI should label live events clearly.
 
 ## Action Recommendation Model

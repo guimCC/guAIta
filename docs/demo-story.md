@@ -36,13 +36,15 @@ Demo-safe close:
 4. Show a real edge event.
    - Put a boar image/video in front of the live camera.
    - The device detects the boar locally.
-   - A live device event appears on the map and pauses the scenario clock so the incident can be explained.
+   - A live device event appears on the map, pauses the scenario clock, and starts the Civil Protection escalation flow.
+   - Additional device detections are ignored while that live escalation is still being handled, keeping the demo focused on one incident.
 
 5. Escalate operationally.
    - The system identifies risk near a high-transit or no-go frontier zone.
    - It raises alert severity.
    - It recommends an action, such as dispatching civil protection or a wildlife response team.
-   - Click **Call Civil Protection**. The ElevenLabs agent calls the demo recipient, explains why the pattern is unusual, answers location and baseline questions, and marks the alert acknowledged when the recipient confirms a response.
+   - The ElevenLabs agent calls the demo recipient, explains why the pattern is unusual, answers location and baseline questions, and marks the alert acknowledged when the recipient confirms a response.
+   - If needed, the dashboard **Call Civil Protection** control can retry a failed call, but it does not create duplicate calls while one is already active.
 
 6. Close with scalability.
    - One device is a proof of concept.
@@ -65,6 +67,7 @@ Boar movement increases near a Collserola boundary early in the morning, close t
 - Active alert panel.
 - Recommended action panel with evidence.
 - Civil Protection call status and acknowledgement.
+- Scenario detections remain visible in the timeline, but only live device events and the manual Edge AI simulation create the primary call-worthy alert.
 - Scenario controls: start, pause, advance, reset.
 - Live device event label when Arduino sends real data.
 

@@ -189,8 +189,10 @@ export const CivilProtectionCallSchema = z.object({
   error: z.string().min(1).optional(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
+  providerAcceptedAt: z.string().datetime().optional(),
   acknowledgedAt: z.string().datetime().optional(),
-  completedAt: z.string().datetime().optional()
+  completedAt: z.string().datetime().optional(),
+  failedAt: z.string().datetime().optional()
 });
 
 export const StartCivilProtectionCallInputSchema = z.object({
