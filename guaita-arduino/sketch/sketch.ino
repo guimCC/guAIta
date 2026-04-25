@@ -7,7 +7,6 @@
 ModulinoThermo thermo;
 ModulinoLight light;
 ModulinoDistance distance;
-ModulinoMovement movement;
 
 bool set_led_state(bool state) {
     digitalWrite(LED_BUILTIN, state ? LOW : HIGH);
@@ -38,7 +37,6 @@ void setup() {
     thermo.begin();
     light.begin();
     distance.begin();
-    movement.begin();
     Bridge.begin();
     Bridge.provide("set_led_state", set_led_state);
     Bridge.provide("get_temperature", get_temperature);
