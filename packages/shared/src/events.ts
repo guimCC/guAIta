@@ -1,5 +1,6 @@
 export const SOCKET_EVENTS = {
   detectionCreated: "detection.created",
+  eventsCleared: "events.cleared",
   alertCreated: "alert.created",
   actionCreated: "action.created",
   actionUpdated: "action.updated",

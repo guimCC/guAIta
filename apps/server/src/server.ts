@@ -20,12 +20,13 @@ export async function buildServer() {
   const io = new SocketServer(app.server, {
     cors: {
       origin: config.corsOrigin,
-      methods: ["GET", "POST"]
+      methods: ["GET", "POST", "DELETE"]
     }
   });
 
   await app.register(cors, {
-    origin: config.corsOrigin
+    origin: config.corsOrigin,
+    methods: ["GET", "POST", "DELETE"]
   });
 
   app.addHook("onClose", async () => {
@@ -51,6 +52,19 @@ export async function buildServer() {
     const limit = request.query.limit ? Number(request.query.limit) : 100;
     return {
       events: db.listEvents(Number.isFinite(limit) ? limit : 100)
+    };
+  });
+
+  app.delete("/api/events", async () => {
+    const deletedCount = db.clearEvents();
+    io.emit(SOCKET_EVENTS.eventsCleared, {
+      deletedCount,
+      clearedAt: new Date().toISOString()
+    });
+
+    return {
+      ok: true,
+      deletedCount
     };
   });
 

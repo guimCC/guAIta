@@ -1,9 +1,14 @@
 import {
   Activity,
+  BellRing,
+  ChevronDown,
+  CheckCircle2,
   Clock3,
   MapPin,
+  PhoneCall,
   RadioTower,
   ShieldAlert,
+  Trash2,
   Wifi,
   WifiOff
 } from "lucide-react";
@@ -38,6 +43,21 @@ interface CreateEventResponse {
   event?: DetectionEvent;
   eventId?: string;
   error?: string;
+}
+
+interface ClearEventsResponse {
+  ok: boolean;
+  deletedCount: number;
+  error?: string;
+}
+
+interface AlertTrackingItem {
+  id: string;
+  title: string;
+  target: string;
+  status: string;
+  detail: string;
+  tone: "standby" | "queued" | "active";
 }
 
 const emptyPointCollection: FeatureCollection<Point> = {
@@ -82,6 +102,62 @@ function percent(value: number): string {
 
 function stationLabel(stationId: string, stationById: Map<string, Station>): string {
   return stationById.get(stationId)?.name ?? stationId;
+}
+
+function buildAlertTrackingItems(
+  latestEvent: DetectionEvent | undefined,
+  stationById: Map<string, Station>
+): AlertTrackingItem[] {
+  if (!latestEvent) {
+    return [
+      {
+        id: "civil-protection-standby",
+        title: "Civil protection",
+        target: "Barcelona coordination",
+        status: "standby",
+        detail: "No active detection to escalate",
+        tone: "standby"
+      },
+      {
+        id: "wildlife-response-standby",
+        title: "Wildlife response",
+        target: "Field unit",
+        status: "standby",
+        detail: "Waiting for event evidence",
+        tone: "standby"
+      }
+    ];
+  }
+
+  const stationName = stationLabel(latestEvent.stationId, stationById);
+  const isHighConfidence = latestEvent.confidence >= 0.85;
+
+  return [
+    {
+      id: `${latestEvent.eventId}-civil-protection`,
+      title: "Civil protection",
+      target: "Boundary access desk",
+      status: isHighConfidence ? "ready to call" : "monitoring",
+      detail: `${stationName}, ${percent(latestEvent.confidence)} confidence`,
+      tone: isHighConfidence ? "active" : "queued"
+    },
+    {
+      id: `${latestEvent.eventId}-wildlife-response`,
+      title: "Wildlife response",
+      target: "Mobile field team",
+      status: "queued",
+      detail: latestEvent.direction ? `Movement ${latestEvent.direction}` : "Direction unknown",
+      tone: "queued"
+    },
+    {
+      id: `${latestEvent.eventId}-park-operations`,
+      title: "Park operations",
+      target: "Access control",
+      status: latestEvent.source === "device" ? "notify" : "review",
+      detail: latestEvent.source === "device" ? "Live device event" : "Manual demo event",
+      tone: latestEvent.source === "device" ? "active" : "queued"
+    }
+  ];
 }
 
 function buildStationFeatures(stations: Station[]): FeatureCollection<Point> {
@@ -363,10 +439,16 @@ export function App() {
   const [connectionState, setConnectionState] = useState<ConnectionState>("connecting");
   const [error, setError] = useState<string | null>(null);
   const [isPosting, setIsPosting] = useState(false);
+  const [isClearingEvents, setIsClearingEvents] = useState(false);
+  const [expandedStationId, setExpandedStationId] = useState<string | null>(null);
 
   const stationById = useMemo(() => new Map(stations.map((station) => [station.id, station])), [stations]);
   const latestEvent = events[0];
   const activeStationCount = stations.filter((station) => station.status === "online").length;
+  const alertTrackingItems = useMemo(
+    () => buildAlertTrackingItems(latestEvent, stationById),
+    [latestEvent, stationById]
+  );
 
   useEffect(() => {
     let isMounted = true;
@@ -417,6 +499,9 @@ export function App() {
     });
     socket.on(SOCKET_EVENTS.detectionCreated, (event: DetectionEvent) => {
       setEvents((currentEvents) => upsertEvent(currentEvents, event));
+    });
+    socket.on(SOCKET_EVENTS.eventsCleared, () => {
+      setEvents([]);
     });
 
     return () => {
@@ -472,6 +557,28 @@ export function App() {
       setError(postError instanceof Error ? postError.message : "Simulation failed.");
     } finally {
       setIsPosting(false);
+    }
+  }
+
+  async function clearEvents() {
+    setIsClearingEvents(true);
+    setError(null);
+
+    try {
+      const response = await fetch(apiUrl("/api/events"), {
+        method: "DELETE"
+      });
+      const body = (await response.json()) as ClearEventsResponse;
+
+      if (!response.ok || !body.ok) {
+        throw new Error(body.error ?? `${response.status} ${response.statusText}`);
+      }
+
+      setEvents([]);
+    } catch (clearError) {
+      setError(clearError instanceof Error ? clearError.message : "Could not clear events.");
+    } finally {
+      setIsClearingEvents(false);
     }
   }
 
@@ -573,6 +680,30 @@ export function App() {
           )}
         </section>
 
+        <section className="panel-section alert-tracking-panel">
+          <div className="section-heading">
+            <BellRing size={16} />
+            <h2>Alert Tracking</h2>
+          </div>
+          <div className="alert-tracking-list">
+            {alertTrackingItems.map((item) => (
+              <article className={`alert-tracking-item ${item.tone}`} key={item.id}>
+                <div className="alert-tracking-icon">
+                  {item.tone === "standby" ? <CheckCircle2 size={15} /> : <PhoneCall size={15} />}
+                </div>
+                <div>
+                  <div className="alert-tracking-head">
+                    <strong>{item.title}</strong>
+                    <span>{item.status}</span>
+                  </div>
+                  <p>{item.target}</p>
+                  <em>{item.detail}</em>
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
+
         <section className="panel-section">
           <div className="section-heading">
             <MapPin size={16} />
@@ -580,14 +711,43 @@ export function App() {
           </div>
           <div className="station-list">
             {stations.map((station) => (
-              <div className="station-row" key={station.id}>
-                <span className={`station-dot ${station.status}`} />
-                <div>
-                  <strong>{station.name}</strong>
-                  <span>{station.type}</span>
+              <article className="station-card" key={station.id}>
+                <button
+                  className="station-row"
+                  type="button"
+                  aria-expanded={expandedStationId === station.id}
+                  onClick={() => setExpandedStationId((currentId) => (currentId === station.id ? null : station.id))}
+                >
+                  <span className={`station-dot ${station.status}`} />
+                  <div>
+                    <strong>{station.name}</strong>
+                    <span>{station.type}</span>
+                  </div>
+                  <em>{station.batteryPct ?? 0}%</em>
+                  <ChevronDown className="station-chevron" size={15} />
+                </button>
+                <div className={expandedStationId === station.id ? "station-details open" : "station-details"}>
+                  <dl>
+                    <div>
+                      <dt>Status</dt>
+                      <dd>{station.status}</dd>
+                    </div>
+                    <div>
+                      <dt>Station ID</dt>
+                      <dd>{station.id}</dd>
+                    </div>
+                    <div>
+                      <dt>Zone</dt>
+                      <dd>{station.zoneId ?? "unassigned"}</dd>
+                    </div>
+                    <div>
+                      <dt>Location</dt>
+                      <dd>{station.latitude.toFixed(4)}, {station.longitude.toFixed(4)}</dd>
+                    </div>
+                  </dl>
+                  {station.description ? <p>{station.description}</p> : null}
                 </div>
-                <em>{station.batteryPct ?? 0}%</em>
-              </div>
+              </article>
             ))}
           </div>
         </section>
@@ -595,16 +755,33 @@ export function App() {
 
       <section className="timeline-panel">
         <div className="timeline-heading">
-          <h2>Event Timeline</h2>
-          <span>{events.length ? `${events.length} stored` : "waiting"}</span>
+          <div>
+            <h2>Event Timeline</h2>
+            <span>{events.length ? `${events.length} stored` : "waiting"}</span>
+          </div>
+          <button
+            className="quiet-button"
+            type="button"
+            onClick={clearEvents}
+            disabled={events.length === 0 || isClearingEvents}
+            title="Clear stored demo events"
+          >
+            <Trash2 size={14} />
+            {isClearingEvents ? "Clearing" : "Clear events"}
+          </button>
         </div>
         <div className="timeline-track">
           {events.slice(0, 8).map((event) => (
             <article className="timeline-item" key={event.eventId}>
-              <span className={`source-badge ${event.source}`}>{event.source}</span>
-              <strong>{stationLabel(event.stationId, stationById)}</strong>
-              <span>{formatTime(event.observedAt)}</span>
-              <span>{percent(event.confidence)}</span>
+              <div className="timeline-item-head">
+                <span className={`source-badge ${event.source}`}>{event.source}</span>
+                <strong>{percent(event.confidence)}</strong>
+              </div>
+              <h3>{stationLabel(event.stationId, stationById)}</h3>
+              <div className="timeline-meta">
+                <span>{formatTime(event.observedAt)}</span>
+                <span>{event.direction ?? "unknown"}</span>
+              </div>
             </article>
           ))}
           {events.length === 0 ? <div className="empty-state timeline-empty">No events stored</div> : null}

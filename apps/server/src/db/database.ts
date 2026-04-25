@@ -82,6 +82,11 @@ export class GuaitaDatabase {
     return rows.map((row) => DetectionEventSchema.parse(JSON.parse(row.payload)));
   }
 
+  clearEvents(): number {
+    const result = this.sqlite.prepare("delete from events").run();
+    return result.changes;
+  }
+
   private initialize(): void {
     this.sqlite.exec(`
       create table if not exists stations (
