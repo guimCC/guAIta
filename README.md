@@ -4,6 +4,7 @@ Edge AI monitoring proof of concept for Collserola wild boar detection and opera
 
 ## Project Docs
 
+- [guaita-arduino/README.md](guaita-arduino/README.md):
 - [SUMMARY.md](SUMMARY.md): team-facing project summary.
 - [CONSTRAINTS.md](CONSTRAINTS.md): hackathon requirements and submission constraints.
 - [challenge-statement.md](challenge-statement.md): challenge statement and hardware context.
