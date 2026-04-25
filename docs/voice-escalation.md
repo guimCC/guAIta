@@ -1,6 +1,6 @@
 # Voice Escalation Demo
 
-guAIta can store a Civil Protection escalation call for each detection and, when configured, place the outbound call through an ElevenLabs agent connected to Twilio.
+guAIta can store a Civil Protection escalation call for an operator-selected detection and, when configured, place the outbound call through an ElevenLabs agent connected to Twilio.
 
 ## Demo Flow
 

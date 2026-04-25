@@ -35,11 +35,11 @@ flowchart LR
 5. The action recommender creates one or more recommended actions.
 6. Socket.IO broadcasts the new detection, alert, and action to connected dashboards.
 7. The frontend updates the map, sidebars, metrics, and event graph.
-8. Device detections and the manual Edge AI simulation are escalation-worthy: the backend stores one Civil Protection call record, optionally starts an ElevenLabs outbound call with the incident packet, and reuses the active call instead of creating duplicates.
+8. Device detections and the manual Edge AI simulation are escalation-worthy alerts. They do not place calls automatically; the dashboard operator must press **Call Civil Protection** to create the call record and optionally start an ElevenLabs outbound call with the incident packet.
 9. Scenario detections remain ambient context in the map and timeline; they do not replace the primary call-worthy alert.
 10. ElevenLabs acknowledgement and post-call webhooks update the stored call and broadcast `call.updated`.
 
-During local development the server clears runtime demo data on startup by default (`DEMO_RESET_ON_START=true`) and starts with live device detections disarmed (`DEVICE_EVENTS_ENABLED_ON_START=false`). The dashboard `Listen from device` switch arms the backend listener. The backend auto-disarms it after one accepted device detection or after `DEVICE_EVENTS_ARM_TTL_MS`, so a running Arduino cannot accidentally create duplicate demo incidents or start a call before the operator is ready.
+During local development the server clears runtime demo data on startup by default (`DEMO_RESET_ON_START=true`) and starts with live device detections disarmed (`DEVICE_EVENTS_ENABLED_ON_START=false`). The dashboard `Listen from device` switch arms the backend listener. The backend auto-disarms it after one accepted device detection or after `DEVICE_EVENTS_ARM_TTL_MS`, so a running Arduino cannot accidentally create duplicate demo incidents. Calls are only started by the dashboard operator action.
 
 Telemetry follows the same transport and station identity, but it is stored as sensor context instead of as a detection. Devices post periodic readings to `/api/device/telemetry`; the backend stores them, broadcasts `telemetry.created`, and the dashboard shows the latest reading per station.
 
@@ -179,7 +179,7 @@ Scenario time is virtual and controllable. Device events are real-time.
 
 - Scenario events follow `currentTimeMs`.
 - Scenario can be paused, resumed, advanced, or reset.
-- A live Arduino/device event is accepted only when the backend device listener is armed, then pauses a running scenario and starts the escalation path.
+- A live Arduino/device event is accepted only when the backend device listener is armed, then pauses a running scenario and creates an operator-reviewed alert.
 - Additional device detections are ignored while an active device call is `requested`, `calling`, or `completed`.
 - The UI should label live events clearly.
 
