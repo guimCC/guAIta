@@ -9,7 +9,7 @@ import requests
 import threading
 import time
 from arduino.app_utils import *
-from arduino.app_utils.image import get_image_bytes
+from arduino.app_utils.image import compress_to_jpeg, get_image_bytes, resize
 from arduino.app_bricks.web_ui import WebUI
 from arduino.app_bricks.video_objectdetection import VideoObjectDetection
 
@@ -90,6 +90,8 @@ def _safe_float(value):
         return None
 
 def image_content_type(image_bytes: bytes):
+    if image_bytes is None:
+        return None
     if image_bytes.startswith(b"\xff\xd8"):
         return "image/jpeg"
     if image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
@@ -98,6 +100,9 @@ def image_content_type(image_bytes: bytes):
 
 def jpeg_upload_image(image_bytes: bytes):
     content_type = image_content_type(image_bytes)
+    if content_type is None:
+        return None, None
+
     if content_type == "image/jpeg" or Image is None:
         return image_bytes, content_type
 
@@ -117,8 +122,36 @@ def jpeg_upload_image(image_bytes: bytes):
 
     return image_bytes, content_type
 
+def _bytes_from_encoded_image(encoded_image):
+    if encoded_image is None:
+        return None
+    if isinstance(encoded_image, bytes):
+        return encoded_image
+    tobytes = getattr(encoded_image, "tobytes", None)
+    if callable(tobytes):
+        return tobytes()
+    try:
+        return bytes(encoded_image)
+    except Exception:
+        return None
+
 def encode_upload_image(frame: bytes):
-    return jpeg_upload_image(get_image_bytes(frame))
+    shape = getattr(frame, "shape", None)
+    if shape is not None and len(shape) >= 2:
+        stream_frame = frame
+        height = int(shape[0])
+        width = int(shape[1])
+
+        if width > STREAM_JPEG_MAX_WIDTH:
+            target_height = max(1, int(height * (STREAM_JPEG_MAX_WIDTH / width)))
+            stream_frame = resize(frame, (STREAM_JPEG_MAX_WIDTH, target_height), maintain_ratio=False)
+
+        jpeg_bytes = _bytes_from_encoded_image(compress_to_jpeg(stream_frame, quality=STREAM_JPEG_QUALITY))
+        if jpeg_bytes:
+            return jpeg_bytes, "image/jpeg"
+
+    image_bytes = get_image_bytes(frame)
+    return jpeg_upload_image(image_bytes)
 
 def _safe_number(value):
     try:
