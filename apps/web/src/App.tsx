@@ -31,7 +31,7 @@ import maplibregl, {
   type Map as MapLibreMap,
   type MapLayerMouseEvent
 } from "maplibre-gl";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { io, type Socket } from "socket.io-client";
 import {
   SOCKET_EVENTS,
@@ -849,12 +849,14 @@ function MapPanel({
   stations,
   zones,
   events,
-  onOpenStationStream
+  onOpenStationStream,
+  children
 }: {
   stations: Station[];
   zones: Zone[];
   events: DetectionEvent[];
   onOpenStationStream: (stationId: string) => void;
+  children?: ReactNode;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
@@ -1143,6 +1145,7 @@ function MapPanel({
         <span>{events.length} detections</span>
       </div>
       {mapError ? <div className="map-error">{mapError}</div> : null}
+      {children}
     </section>
   );
 }
@@ -2233,7 +2236,18 @@ export function App() {
         {error ? <div className="error-banner">{error}</div> : null}
       </aside>
 
-      <MapPanel stations={stations} zones={zones} events={events} onOpenStationStream={openLiveStreamViewer} />
+      <MapPanel stations={stations} zones={zones} events={events} onOpenStationStream={openLiveStreamViewer}>
+        {activeStreamStationId ? (
+          <LiveStreamViewer
+            station={activeStreamStation}
+            session={activeStreamSession}
+            frame={activeStreamFrame}
+            nowMs={streamNowMs}
+            error={streamError}
+            onClose={closeLiveStreamViewer}
+          />
+        ) : null}
+      </MapPanel>
 
       <aside className="right-rail">
         <section className="panel-section rail-quarter latest-panel">
@@ -2469,17 +2483,6 @@ export function App() {
           {events.length === 0 ? <div className="empty-state timeline-empty">No events stored</div> : null}
         </div>
       </section>
-
-      {activeStreamStationId ? (
-        <LiveStreamViewer
-          station={activeStreamStation}
-          session={activeStreamSession}
-          frame={activeStreamFrame}
-          nowMs={streamNowMs}
-          error={streamError}
-          onClose={closeLiveStreamViewer}
-        />
-      ) : null}
 
       {detectionNotice ? (
         <DetectionNotification
