@@ -16,7 +16,7 @@ export function normalizeDetectionEvent(input: DetectionEventInput): DetectionEv
   });
 }
 
-export function assertSource(input: DetectionEventInput, expectedSource: DetectionSource): void {
+export function assertSource(input: { source: DetectionSource }, expectedSource: DetectionSource): void {
   if (input.source !== expectedSource) {
     throw new Error(`Expected source "${expectedSource}" but received "${input.source}".`);
   }

@@ -6,10 +6,13 @@ import {
   StartCivilProtectionCallInputSchema,
   DetectionEventInputSchema,
   SOCKET_EVENTS,
+  TelemetryReadingInputSchema,
   type CivilProtectionCall,
   type DetectionEvent,
   type DetectionEventInput,
-  type DetectionSource
+  type DetectionSource,
+  type TelemetryReading,
+  type TelemetryReadingInput
 } from "@guaita/shared";
 import { config } from "./config.js";
 import { GuaitaDatabase } from "./db/database.js";
@@ -18,6 +21,7 @@ import {
   placeElevenLabsOutboundCall
 } from "./domain/civil-protection-calls.js";
 import { assertSource, estimateSeverity, normalizeDetectionEvent } from "./domain/detections.js";
+import { normalizeTelemetryReading } from "./domain/telemetry.js";
 import { ScenarioEngine } from "./scenarios/scenario-engine.js";
 
 function isDuplicateEventError(error: unknown): boolean {
@@ -84,6 +88,17 @@ export async function buildServer() {
       events: db.listEvents(Number.isFinite(limit) ? limit : 100)
     };
   });
+
+  app.get("/api/telemetry", async (request: FastifyRequest<{ Querystring: { limit?: string } }>) => {
+    const limit = request.query.limit ? Number(request.query.limit) : 100;
+    return {
+      telemetry: db.listTelemetryReadings(Number.isFinite(limit) ? limit : 100)
+    };
+  });
+
+  app.get("/api/telemetry/latest", async () => ({
+    telemetry: db.listLatestTelemetryReadings()
+  }));
 
   app.delete("/api/events", async () => {
     const deletedCount = db.clearEvents();
@@ -379,11 +394,79 @@ export async function buildServer() {
     });
   });
 
+  app.post("/api/device/telemetry", async (request, reply) => {
+    const authorization = request.headers.authorization;
+
+    if (authorization !== `Bearer ${config.deviceToken}`) {
+      return reply.code(401).send({
+        ok: false,
+        error: "unauthorized"
+      });
+    }
+
+    return createTelemetryReading(request, reply, "device", db, io);
+  });
+
   app.post("/api/manual/events", async (request, reply) => {
     return createDetection(request, reply, "manual", db, io);
   });
 
   return { app, db, io };
+}
+
+async function createTelemetryReading(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  expectedSource: DetectionSource,
+  db: GuaitaDatabase,
+  io: SocketServer
+) {
+  const parsed = TelemetryReadingInputSchema.safeParse(request.body);
+
+  if (!parsed.success) {
+    return reply.code(400).send({
+      ok: false,
+      error: "invalid_telemetry_reading",
+      issues: parsed.error.flatten()
+    });
+  }
+
+  try {
+    assertSource(parsed.data, expectedSource);
+  } catch (error) {
+    return reply.code(400).send({
+      ok: false,
+      error: "invalid_telemetry_source",
+      message: error instanceof Error ? error.message : "Invalid telemetry source."
+    });
+  }
+
+  try {
+    const telemetry = storeTelemetryReading(parsed.data, db, io);
+
+    return reply.code(201).send({
+      ok: true,
+      telemetryId: telemetry.telemetryId,
+      telemetry
+    });
+  } catch (error) {
+    if (isDuplicateEventError(error)) {
+      return reply.code(409).send({
+        ok: false,
+        error: "duplicate_telemetry_reading"
+      });
+    }
+
+    if (error instanceof Error && error.message.startsWith("unknown_station:")) {
+      return reply.code(404).send({
+        ok: false,
+        error: "unknown_station",
+        stationId: error.message.replace("unknown_station:", "")
+      });
+    }
+
+    throw error;
+  }
 }
 
 async function createDetection(
@@ -507,10 +590,52 @@ function storeDetection(input: DetectionEventInput, db: GuaitaDatabase, io: Sock
 
   db.insertEvent(event);
   const severity = estimateSeverity(event, station);
+  const telemetryInput = telemetryFromDetectionEvent(event);
+
+  if (telemetryInput) {
+    storeTelemetryReading(telemetryInput, db, io);
+  }
+
   io.emit(SOCKET_EVENTS.detectionCreated, event);
 
   return {
     event,
     severity
   };
+}
+
+function telemetryFromDetectionEvent(event: DetectionEvent): TelemetryReadingInput | undefined {
+  if (
+    event.temperatureC === undefined &&
+    event.humidityPct === undefined &&
+    event.lightLux === undefined &&
+    event.batteryPct === undefined
+  ) {
+    return undefined;
+  }
+
+  return {
+    telemetryId: `tel_${event.eventId}`,
+    stationId: event.stationId,
+    observedAt: event.observedAt,
+    source: event.source,
+    temperatureC: event.temperatureC,
+    humidityPct: event.humidityPct,
+    lightLux: event.lightLux,
+    batteryPct: event.batteryPct
+  };
+}
+
+function storeTelemetryReading(input: TelemetryReadingInput, db: GuaitaDatabase, io: SocketServer): TelemetryReading {
+  const telemetry = normalizeTelemetryReading(input);
+  const station = db.getStation(telemetry.stationId);
+
+  if (!station) {
+    throw new Error(`unknown_station:${telemetry.stationId}`);
+  }
+
+  db.insertTelemetryReading(telemetry);
+  io.emit(SOCKET_EVENTS.telemetryCreated, telemetry);
+
+  return telemetry;
 }

@@ -29,6 +29,57 @@ export const ModelInfoSchema = z.object({
   latencyMs: z.number().int().nonnegative().optional()
 });
 
+const TelemetryReadingBodyShape = {
+  stationId: z.string().min(1),
+  observedAt: z.string().datetime(),
+  source: DetectionSourceSchema,
+  temperatureC: z.number().optional(),
+  humidityPct: z.number().min(0).max(100).optional(),
+  lightLux: z.number().nonnegative().optional(),
+  batteryPct: z.number().min(0).max(100).optional(),
+  rssiDbm: z.number().optional()
+};
+
+function requireTelemetryValue(
+  value: {
+    temperatureC?: number;
+    humidityPct?: number;
+    lightLux?: number;
+    batteryPct?: number;
+    rssiDbm?: number;
+  },
+  context: z.RefinementCtx
+): void {
+  if (
+    value.temperatureC === undefined &&
+    value.humidityPct === undefined &&
+    value.lightLux === undefined &&
+    value.batteryPct === undefined &&
+    value.rssiDbm === undefined
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "At least one telemetry value is required.",
+      path: ["temperatureC"]
+    });
+  }
+}
+
+export const TelemetryReadingSchema = z
+  .object({
+    ...TelemetryReadingBodyShape,
+    telemetryId: z.string().min(1)
+  })
+  .superRefine(requireTelemetryValue);
+
+export const TelemetryReadingInputSchema = z
+  .object({
+    ...TelemetryReadingBodyShape,
+    telemetryId: z.string().min(1).optional(),
+    observedAt: z.string().datetime().optional()
+  })
+  .superRefine(requireTelemetryValue);
+
 const DetectionEventBodySchema = z.object({
   stationId: z.string().min(1),
   observedAt: z.string().datetime(),

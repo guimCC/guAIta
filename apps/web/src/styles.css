@@ -791,6 +791,49 @@ dd {
   line-height: 1.35;
 }
 
+.telemetry-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  margin-top: 10px;
+}
+
+.telemetry-grid div {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 28px;
+  border: 1px solid rgba(120, 113, 108, 0.22);
+  border-radius: 8px;
+  padding: 0 7px;
+  color: #d6d3d1;
+  background: rgba(41, 37, 36, 0.58);
+  font-size: 0.72rem;
+  font-weight: 780;
+}
+
+.telemetry-grid svg {
+  flex: 0 0 auto;
+  color: #fde68a;
+}
+
+.telemetry-grid span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.station-telemetry-empty {
+  margin-top: 10px;
+  border: 1px dashed rgba(120, 113, 108, 0.28);
+  border-radius: 8px;
+  padding: 8px;
+  color: #a8a29e;
+  font-size: 0.74rem;
+}
+
 .station-dot {
   width: 9px;
   height: 9px;

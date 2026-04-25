@@ -5,10 +5,12 @@ import {
   CivilProtectionCallSchema,
   DetectionEventSchema,
   StationSchema,
+  TelemetryReadingSchema,
   ZoneSchema,
   type CivilProtectionCall,
   type DetectionEvent,
   type Station,
+  type TelemetryReading,
   type Zone
 } from "@guaita/shared";
 import { seedStations } from "../seeds/stations.js";
@@ -96,6 +98,43 @@ export class GuaitaDatabase {
     this.clearCalls();
     const result = this.sqlite.prepare("delete from events").run();
     return result.changes;
+  }
+
+  insertTelemetryReading(reading: TelemetryReading): void {
+    this.sqlite
+      .prepare(
+        `insert into telemetry_readings (telemetry_id, station_id, observed_at, source, payload, created_at)
+         values (@telemetryId, @stationId, @observedAt, @source, @payload, @createdAt)`
+      )
+      .run({
+        telemetryId: reading.telemetryId,
+        stationId: reading.stationId,
+        observedAt: reading.observedAt,
+        source: reading.source,
+        payload: JSON.stringify(reading),
+        createdAt: new Date().toISOString()
+      });
+  }
+
+  listTelemetryReadings(limit = 100): TelemetryReading[] {
+    const boundedLimit = Math.max(1, Math.min(500, Math.trunc(limit)));
+    const rows = this.sqlite
+      .prepare("select payload from telemetry_readings order by observed_at desc, created_at desc limit ?")
+      .all(boundedLimit) as JsonRow[];
+
+    return rows.map((row) => TelemetryReadingSchema.parse(JSON.parse(row.payload)));
+  }
+
+  listLatestTelemetryReadings(): TelemetryReading[] {
+    const latestByStation = new Map<string, TelemetryReading>();
+
+    for (const reading of this.listTelemetryReadings(500)) {
+      if (!latestByStation.has(reading.stationId)) {
+        latestByStation.set(reading.stationId, reading);
+      }
+    }
+
+    return Array.from(latestByStation.values());
   }
 
   clearCalls(): number {
@@ -209,11 +248,22 @@ export class GuaitaDatabase {
         updated_at text not null
       );
 
+      create table if not exists telemetry_readings (
+        telemetry_id text primary key,
+        station_id text not null,
+        observed_at text not null,
+        source text not null,
+        payload text not null,
+        created_at text not null
+      );
+
       create index if not exists events_observed_at_idx on events(observed_at desc);
       create index if not exists events_station_id_idx on events(station_id);
       create index if not exists calls_event_id_idx on calls(event_id);
       create index if not exists calls_conversation_id_idx on calls(conversation_id);
       create index if not exists calls_created_at_idx on calls(created_at desc);
+      create index if not exists telemetry_observed_at_idx on telemetry_readings(observed_at desc);
+      create index if not exists telemetry_station_id_idx on telemetry_readings(station_id);
     `);
   }
 

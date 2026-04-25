@@ -1,5 +1,6 @@
 export const SOCKET_EVENTS = {
   detectionCreated: "detection.created",
+  telemetryCreated: "telemetry.created",
   eventsCleared: "events.cleared",
   callUpdated: "call.updated",
   callsCleared: "calls.cleared",

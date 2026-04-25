@@ -16,10 +16,10 @@ Build a reliable demo system where a real or simulated edge device detects wild 
 
 ```mermaid
 flowchart LR
-  A["Arduino UNO Q\nCamera + Edge AI model"] -->|HTTP JSON| B["Fastify Server"]
+  A["Arduino UNO Q\nCamera + Edge AI model + sensors"] -->|HTTP JSON| B["Fastify Server"]
   C["Scenario Engine"] -->|same event schema| B
   D["Manual Demo Controls"] -->|same event schema| B
-  B --> E["SQLite\nstations, zones, events, calls"]
+  B --> E["SQLite\nstations, zones, events, telemetry, calls"]
   B -->|Socket.IO realtime| F["React Dashboard"]
   B -->|optional outbound call| I["ElevenLabs + Twilio\nvoice escalation"]
   F --> G["MapLibre Map\nstations, zones, alerts"]
@@ -37,6 +37,8 @@ flowchart LR
 7. The frontend updates the map, sidebars, metrics, and event graph.
 8. If the operator escalates, the backend stores a Civil Protection call record and optionally starts an ElevenLabs outbound call with the incident packet.
 9. ElevenLabs acknowledgement and post-call webhooks update the stored call and broadcast `call.updated`.
+
+Telemetry follows the same transport and station identity, but it is stored as sensor context instead of as a detection. Devices post periodic readings to `/api/device/telemetry`; the backend stores them, broadcasts `telemetry.created`, and the dashboard shows the latest reading per station.
 
 ## Proposed Monorepo Layout
 
@@ -83,10 +85,13 @@ Primary routes:
 GET  /health
 POST /api/device/events
 GET  /api/events
+GET  /api/telemetry
+GET  /api/telemetry/latest
 GET  /api/stations
 GET  /api/zones
 GET  /api/actions
 GET  /api/calls
+POST /api/device/telemetry
 POST /api/calls/civil-protection
 POST /api/calls/civil-protection/acknowledge
 POST /api/calls/elevenlabs/post-call
@@ -127,6 +132,7 @@ Suggested tables:
 stations
 zones
 events
+telemetry_readings
 alerts
 recommended_actions
 calls
@@ -145,6 +151,7 @@ Suggested realtime events:
 
 ```text
 detection.created
+telemetry.created
 alert.created
 action.created
 action.updated
