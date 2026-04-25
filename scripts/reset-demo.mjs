@@ -30,12 +30,14 @@ async function main() {
     throw new Error("guAIta server health check failed.");
   }
 
-  const events = await request("/api/events", { method: "DELETE" });
-  const scenario = await request("/api/scenario/reset", { method: "POST" });
+  const reset = await request("/api/demo/reset", { method: "POST" });
+  const eventsDeleted = reset.reset?.eventsDeleted ?? 0;
+  const callsDeleted = reset.reset?.callsDeleted ?? 0;
+  const telemetryDeleted = reset.reset?.telemetryReadingsDeleted ?? 0;
 
-  console.log(`Cleared ${events.deletedCount ?? 0} stored detection event(s) and related call(s).`);
-  console.log(`Scenario reset to ${scenario.scenario?.status ?? "unknown"} at ${scenario.scenario?.virtualNowIso ?? "unknown time"}.`);
-  console.log("Refresh the dashboard before the next test.");
+  console.log(`Cleared ${eventsDeleted} stored detection event(s), ${callsDeleted} call(s), and ${telemetryDeleted} telemetry reading(s).`);
+  console.log(`Scenario reset to ${reset.scenario?.status ?? "unknown"} at ${reset.scenario?.virtualNowIso ?? "unknown time"}.`);
+  console.log(`Device listener is ${reset.deviceListening?.enabled ? "armed" : "disarmed"} for the next test.`);
 }
 
 main().catch((error) => {

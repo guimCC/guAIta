@@ -39,6 +39,8 @@ flowchart LR
 9. Scenario detections remain ambient context in the map and timeline; they do not replace the primary call-worthy alert.
 10. ElevenLabs acknowledgement and post-call webhooks update the stored call and broadcast `call.updated`.
 
+During local development the server clears runtime demo data on startup by default (`DEMO_RESET_ON_START=true`) and starts with live device detections disarmed (`DEVICE_EVENTS_ENABLED_ON_START=false`). The dashboard `Listen from device` switch arms the backend listener. The backend auto-disarms it after one accepted device detection or after `DEVICE_EVENTS_ARM_TTL_MS`, so a running Arduino cannot accidentally create duplicate demo incidents or start a call before the operator is ready.
+
 Telemetry follows the same transport and station identity, but it is stored as sensor context instead of as a detection. Devices post periodic readings to `/api/device/telemetry`; the backend stores them, broadcasts `telemetry.created`, and the dashboard shows the latest reading per station.
 
 ## Proposed Monorepo Layout
@@ -85,6 +87,8 @@ Primary routes:
 ```text
 GET  /health
 POST /api/device/events
+GET  /api/device/listening
+PUT  /api/device/listening
 GET  /api/events
 GET  /api/telemetry
 GET  /api/telemetry/latest
@@ -102,6 +106,7 @@ POST /api/scenario/resume
 POST /api/scenario/advance
 POST /api/scenario/reset
 POST /api/manual/events
+POST /api/demo/reset
 ```
 
 ## Frontend Responsibilities
@@ -153,6 +158,8 @@ Suggested realtime events:
 ```text
 detection.created
 telemetry.created
+telemetry.cleared
+device.listener.updated
 alert.created
 action.created
 action.updated
@@ -172,7 +179,7 @@ Scenario time is virtual and controllable. Device events are real-time.
 
 - Scenario events follow `currentTimeMs`.
 - Scenario can be paused, resumed, advanced, or reset.
-- A live Arduino/device event pauses a running scenario and starts the escalation path.
+- A live Arduino/device event is accepted only when the backend device listener is armed, then pauses a running scenario and starts the escalation path.
 - Additional device detections are ignored while an active device call is `requested`, `calling`, or `completed`.
 - The UI should label live events clearly.
 

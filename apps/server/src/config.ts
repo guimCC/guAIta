@@ -71,6 +71,10 @@ function booleanEnv(name: string, fallback: boolean): boolean {
   return ["1", "true", "yes", "on"].includes(rawValue.toLowerCase());
 }
 
+function nodeEnv(): string {
+  return cleanEnv("NODE_ENV") ?? "development";
+}
+
 function resolveFromRepo(pathValue: string): string {
   return isAbsolute(pathValue) ? pathValue : resolve(repoRoot, pathValue);
 }
@@ -126,12 +130,15 @@ function corsOrigin(origin: string | undefined, callback: (error: Error | null, 
 }
 
 export const config = {
-  nodeEnv: cleanEnv("NODE_ENV") ?? "development",
+  nodeEnv: nodeEnv(),
   host: cleanEnv("HOST") ?? "0.0.0.0",
   port: numberEnv("PORT", 3000),
   publicBaseUrl: cleanEnv("PUBLIC_TUNNEL_URL") ?? cleanEnv("PUBLIC_BASE_URL") ?? "http://localhost:3000",
   databasePath: resolveFromRepo(cleanEnv("DATABASE_PATH") ?? "./data/guaita.db"),
   deviceToken: cleanEnv("DEVICE_TOKEN") ?? "demo-device-token",
+  demoResetOnStart: booleanEnv("DEMO_RESET_ON_START", nodeEnv() !== "production"),
+  deviceEventsEnabledOnStart: booleanEnv("DEVICE_EVENTS_ENABLED_ON_START", false),
+  deviceEventsArmTtlMs: numberEnv("DEVICE_EVENTS_ARM_TTL_MS", 5 * 60_000),
   callsEnabled: booleanEnv("CALLS_ENABLED", false),
   civilProtectionDemoNumber: cleanEnv("CIVIL_PROTECTION_DEMO_NUMBER"),
   elevenLabsApiKey: cleanEnv("ELEVENLABS_API_KEY"),

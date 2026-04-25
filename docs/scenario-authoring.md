@@ -60,9 +60,9 @@ speed
 
 Scenario events use virtual time. Live device events use real time.
 
-If the scenario is running and the Arduino sends a detection, the backend stores and broadcasts the device event, then pauses the scenario clock so the live incident can be explained during the demo.
+If the scenario is running and the Arduino sends a detection while the backend device listener is armed, the backend stores and broadcasts the device event, auto-disarms the listener, then pauses the scenario clock so the live incident can be explained during the demo.
 
-If the scenario is paused and no device escalation is active, the Arduino detection should still be accepted and shown as a live device event. While a device-triggered Civil Protection call is `requested`, `calling`, or `completed`, additional device detections are ignored so the demo keeps one incident and one call record in focus.
+If the scenario is paused, the backend device listener is armed, and no device escalation is active, the Arduino detection should still be accepted and shown as a live device event. While the listener is disarmed, device detections receive a `202` ignored response and do not create stored events or calls. While a device-triggered Civil Protection call is `requested`, `calling`, or `completed`, additional device detections are ignored so the demo keeps one incident and one call record in focus.
 
 The current MVP scenario is a night-to-day patrol:
 
