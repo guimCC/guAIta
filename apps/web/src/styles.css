@@ -300,6 +300,37 @@ dt {
   color: #bbf7d0;
 }
 
+.summary-shell {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100dvh;
+  padding: 24px;
+  background:
+    radial-gradient(circle at 20% 15%, rgba(34, 197, 94, 0.12), transparent 45%),
+    linear-gradient(90deg, rgba(28, 25, 23, 0.98), rgba(30, 41, 31, 0.92)),
+    #171412;
+}
+
+.summary-card {
+  display: grid;
+  gap: 8px;
+  min-width: min(90vw, 360px);
+  padding: 24px 28px;
+  border: 1px solid rgba(120, 113, 108, 0.35);
+  border-radius: 14px;
+  background: rgba(28, 25, 23, 0.95);
+  box-shadow: 0 16px 38px rgba(0, 0, 0, 0.35);
+  text-align: center;
+}
+
+.summary-card strong {
+  color: #bbf7d0;
+  font-size: clamp(3.5rem, 12vw, 6.5rem);
+  line-height: 1;
+  letter-spacing: 0.02em;
+}
+
 .control-button:disabled {
   cursor: not-allowed;
   opacity: 0.46;
