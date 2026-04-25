@@ -396,6 +396,24 @@ function latestCallForEvent(calls: CivilProtectionCall[], eventId: string | unde
   return eventId ? calls.find((call) => call.eventId === eventId) : undefined;
 }
 
+function unresolvedEscalationCallEvent(
+  calls: CivilProtectionCall[],
+  events: DetectionEvent[]
+): DetectionEvent | undefined {
+  for (const call of calls) {
+    if (!isUnresolvedCall(call)) {
+      continue;
+    }
+
+    const event = events.find((candidate) => candidate.eventId === call.eventId);
+    if (event && isEscalationEvent(event)) {
+      return event;
+    }
+  }
+
+  return undefined;
+}
+
 function controlStationNumber(station: Pick<Station, "id" | "name">): number | undefined {
   const nameMatch = station.name.match(/Control Station\s+(\d+)/i);
   if (nameMatch?.[1]) {
@@ -500,7 +518,7 @@ function buildAlertTrackingItems(
   stationById: Map<string, Station>,
   latestCall: CivilProtectionCall | undefined
 ): AlertTrackingItem[] {
-  if (!latestEvent) {
+  if (!latestEvent || !isEscalationEvent(latestEvent)) {
     return [];
   }
 
@@ -941,18 +959,15 @@ export function App() {
   }, [telemetryReadings]);
   const latestEvent = events[0];
   const currentCalls = useMemo(() => latestCallsByEvent(calls), [calls]);
-  const activeCall = useMemo(() => currentCalls.find(isUnresolvedCall), [currentCalls]);
   const activeCallEvent = useMemo(
-    () => (activeCall ? events.find((event) => event.eventId === activeCall.eventId) : undefined),
-    [activeCall, events]
+    () => unresolvedEscalationCallEvent(currentCalls, events),
+    [currentCalls, events]
   );
   const latestEscalationEvent = useMemo(
     () => events.find((event) => isEscalationEvent(event) && !dismissedAlertEventIds.has(event.eventId)),
     [dismissedAlertEventIds, events]
   );
-  const activeAlertEvent = activeCallEvent && !dismissedAlertEventIds.has(activeCallEvent.eventId)
-    ? activeCallEvent
-    : latestEscalationEvent;
+  const activeAlertEvent = activeCallEvent ?? latestEscalationEvent;
   const latestCall = latestCallForEvent(currentCalls, activeAlertEvent?.eventId);
   const activeStationCount = stations.filter((station) => station.status === "online").length;
   const telemetryStationCount = latestTelemetryByStation.size;
