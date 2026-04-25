@@ -597,7 +597,7 @@ function MapPanel({
   );
 }
 
-function DashboardApp() {
+export function App() {
   const [stations, setStations] = useState<Station[]>([]);
   const [zones, setZones] = useState<Zone[]>([]);
   const [events, setEvents] = useState<DetectionEvent[]>([]);
@@ -1360,25 +1360,4 @@ function DashboardApp() {
       </section>
     </main>
   );
-}
-
-function SummaryPage() {
-  return (
-    <main className="summary-shell" aria-label="Summary page">
-      <section className="summary-card" role="status" aria-live="polite">
-        <p className="eyebrow">Summary</p>
-        <strong>42</strong>
-      </section>
-    </main>
-  );
-}
-
-export function App() {
-  const normalizedPath = window.location.pathname.replace(/\/+$/, "") || "/";
-
-  if (normalizedPath === "/summary") {
-    return <SummaryPage />;
-  }
-
-  return <DashboardApp />;
 }
