@@ -197,6 +197,54 @@ function callStatusLabel(call: CivilProtectionCall | undefined): string {
   }
 }
 
+function callStatusDetail(call: CivilProtectionCall): string {
+  if (call.error) {
+    return call.error;
+  }
+
+  if (call.acknowledgement) {
+    return call.acknowledgement;
+  }
+
+  if (call.transcriptSummary) {
+    return call.transcriptSummary;
+  }
+
+  switch (call.status) {
+    case "requested":
+      return "Call request stored locally.";
+    case "calling":
+      return "ElevenLabs accepted the outbound call request.";
+    case "completed":
+      return "Call ended. Waiting for explicit acknowledgement if not already handled.";
+    case "acknowledged":
+      return "Civil Protection acknowledged the alert.";
+    case "failed":
+      return "The outbound call did not complete.";
+  }
+}
+
+function callProgress(call: CivilProtectionCall) {
+  const providerAccepted = Boolean(call.conversationId || call.callSid) || ["calling", "completed", "acknowledged"].includes(call.status);
+  const callClosed = Boolean(call.completedAt) || ["completed", "acknowledged", "failed"].includes(call.status);
+  const handled = call.status === "acknowledged";
+
+  return {
+    requested: "done",
+    providerAccepted: call.status === "failed" && !providerAccepted ? "failed" : providerAccepted ? "done" : "pending",
+    callClosed: call.status === "failed" ? "failed" : handled || callClosed ? "done" : providerAccepted ? "current" : "pending",
+    handled: handled ? "done" : callClosed ? "current" : "pending"
+  } as const;
+}
+
+function shortIdentifier(value: string | null | undefined): string {
+  if (!value) {
+    return "pending";
+  }
+
+  return value.length <= 14 ? value : `${value.slice(0, 10)}...${value.slice(-4)}`;
+}
+
 function callTone(call: CivilProtectionCall | undefined, isHighConfidence: boolean): AlertTrackingItem["tone"] {
   if (call?.status === "acknowledged") {
     return "standby";
@@ -560,6 +608,7 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [isPosting, setIsPosting] = useState(false);
   const [isCallingCivilProtection, setIsCallingCivilProtection] = useState(false);
+  const [isMarkingCallHandled, setIsMarkingCallHandled] = useState(false);
   const [isClearingEvents, setIsClearingEvents] = useState(false);
   const [isClearingAlerts, setIsClearingAlerts] = useState(false);
   const [isScenarioBusy, setIsScenarioBusy] = useState(false);
@@ -678,6 +727,19 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    const interval = window.setInterval(async () => {
+      try {
+        const callResponse = await fetchJson<CallsResponse>("/api/calls?limit=20");
+        setCalls(callResponse.calls);
+      } catch {
+        // Socket.IO remains the primary path; polling is a quiet fallback for call status.
+      }
+    }, 3_000);
+
+    return () => window.clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
     if (!expandedStationId || !stationListRef.current) {
       return;
     }
@@ -772,6 +834,40 @@ export function App() {
       setError(callError instanceof Error ? callError.message : "Civil Protection call failed.");
     } finally {
       setIsCallingCivilProtection(false);
+    }
+  }
+
+  async function markCallHandled() {
+    if (!latestCall) {
+      setError("No Civil Protection call to mark as handled.");
+      return;
+    }
+
+    setIsMarkingCallHandled(true);
+    setError(null);
+
+    try {
+      const response = await fetch(apiUrl("/api/calls/civil-protection/dashboard-acknowledge"), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          callId: latestCall.id,
+          notes: "Dashboard operator confirmed Civil Protection response."
+        })
+      });
+      const body = (await response.json()) as CivilProtectionCallResponse;
+
+      if (!response.ok || !body.ok || !body.call) {
+        throw new Error(body.message ?? body.error ?? `${response.status} ${response.statusText}`);
+      }
+
+      setCalls((currentCalls) => upsertCall(currentCalls, body.call as CivilProtectionCall));
+    } catch (callError) {
+      setError(callError instanceof Error ? callError.message : "Could not mark call as handled.");
+    } finally {
+      setIsMarkingCallHandled(false);
     }
   }
 
@@ -1078,7 +1174,6 @@ export function App() {
             disabled={
               !activeAlertEvent ||
               isCallingCivilProtection ||
-              latestCall?.status === "calling" ||
               latestCall?.status === "acknowledged"
             }
             title="Call the configured Civil Protection demo recipient"
@@ -1088,13 +1183,59 @@ export function App() {
               ? "Calling"
               : latestCall?.status === "acknowledged"
                 ? "Acknowledged"
+                : latestCall
+                  ? "Retry Civil Protection"
                 : "Call Civil Protection"}
           </button>
           {latestCall ? (
-            <div className={`call-receipt ${latestCall.status}`}>
-              <span>{latestCall.provider}</span>
-              <strong>{callStatusLabel(latestCall)}</strong>
-              <p>{latestCall.transcriptSummary ?? latestCall.acknowledgement ?? latestCall.incidentSummary}</p>
+            <div className={`call-status-card ${latestCall.status}`}>
+              <div className="call-status-top">
+                <span>Voice escalation</span>
+                <strong>{callStatusLabel(latestCall)}</strong>
+              </div>
+              <p>{callStatusDetail(latestCall)}</p>
+              <div className="call-progress" aria-label="Civil Protection call progress">
+                {[
+                  ["requested", "Requested"],
+                  ["providerAccepted", "Provider"],
+                  ["callClosed", "Call"],
+                  ["handled", "Handled"]
+                ].map(([step, label]) => (
+                  <span className={callProgress(latestCall)[step as keyof ReturnType<typeof callProgress>]} key={step}>
+                    {label}
+                  </span>
+                ))}
+              </div>
+              <dl className="call-meta">
+                <div>
+                  <dt>Created</dt>
+                  <dd>{formatTime(latestCall.createdAt)}</dd>
+                </div>
+                <div>
+                  <dt>Updated</dt>
+                  <dd>{formatTime(latestCall.updatedAt)}</dd>
+                </div>
+                <div>
+                  <dt>Conversation</dt>
+                  <dd>{shortIdentifier(latestCall.conversationId)}</dd>
+                </div>
+                <div>
+                  <dt>Call SID</dt>
+                  <dd>{shortIdentifier(latestCall.callSid)}</dd>
+                </div>
+              </dl>
+              {latestCall.status !== "acknowledged" ? (
+                <button
+                  className="quiet-button call-status-action"
+                  type="button"
+                  onClick={markCallHandled}
+                  disabled={isMarkingCallHandled}
+                  title="Mark Civil Protection response as handled in the dashboard"
+                >
+                  <CheckCircle2 size={14} />
+                  {isMarkingCallHandled ? "Marking" : "Mark handled"}
+                </button>
+              ) : null}
             </div>
           ) : null}
         </section>

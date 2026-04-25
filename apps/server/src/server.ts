@@ -7,6 +7,7 @@ import {
   DetectionEventInputSchema,
   SOCKET_EVENTS,
   TelemetryReadingInputSchema,
+  type AcknowledgeCivilProtectionCallInput,
   type CivilProtectionCall,
   type DetectionEvent,
   type DetectionEventInput,
@@ -237,7 +238,7 @@ export async function buildServer() {
         });
       }
 
-      const parsed = AcknowledgeCivilProtectionCallInputSchema.safeParse(request.body);
+      const parsed = AcknowledgeCivilProtectionCallInputSchema.safeParse(normalizeAcknowledgementBody(request.body));
 
       if (!parsed.success) {
         return reply.code(400).send({
@@ -247,23 +248,13 @@ export async function buildServer() {
         });
       }
 
-      const call = findCall(db, parsed.data.callId, parsed.data.eventId ?? parsed.data.incidentId);
-      if (!call) {
+      const updatedCall = acknowledgeCall(db, io, parsed.data);
+      if (!updatedCall) {
         return reply.code(404).send({
           ok: false,
           error: "unknown_call"
         });
       }
-
-      const updatedCall: CivilProtectionCall = {
-        ...call,
-        status: "acknowledged",
-        acknowledgement: parsed.data.notes ?? parsed.data.outcome ?? "Civil Protection acknowledged the incident.",
-        acknowledgedAt: call.acknowledgedAt ?? new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      };
-      db.updateCall(updatedCall);
-      emitCallUpdated(io, updatedCall);
 
       return {
         ok: true,
@@ -271,6 +262,35 @@ export async function buildServer() {
       };
     }
   );
+
+  app.post("/api/calls/civil-protection/dashboard-acknowledge", async (request, reply) => {
+    const parsed = AcknowledgeCivilProtectionCallInputSchema.safeParse(normalizeAcknowledgementBody(request.body));
+
+    if (!parsed.success) {
+      return reply.code(400).send({
+        ok: false,
+        error: "invalid_acknowledgement",
+        issues: parsed.error.flatten()
+      });
+    }
+
+    const updatedCall = acknowledgeCall(db, io, {
+      ...parsed.data,
+      notes: parsed.data.notes ?? "Dashboard operator marked Civil Protection response as handled."
+    });
+
+    if (!updatedCall) {
+      return reply.code(404).send({
+        ok: false,
+        error: "unknown_call"
+      });
+    }
+
+    return {
+      ok: true,
+      call: updatedCall
+    };
+  });
 
   app.post(
     "/api/calls/elevenlabs/post-call",
@@ -539,6 +559,30 @@ function emitCallUpdated(io: SocketServer, call: CivilProtectionCall): void {
   io.emit(SOCKET_EVENTS.callUpdated, call);
 }
 
+function acknowledgeCall(
+  db: GuaitaDatabase,
+  io: SocketServer,
+  input: AcknowledgeCivilProtectionCallInput
+): CivilProtectionCall | undefined {
+  const call = findCall(db, input.callId, input.eventId ?? input.incidentId);
+
+  if (!call) {
+    return undefined;
+  }
+
+  const updatedCall: CivilProtectionCall = {
+    ...call,
+    status: "acknowledged",
+    acknowledgement: input.notes ?? input.outcome ?? "Civil Protection acknowledged the incident.",
+    acknowledgedAt: call.acknowledgedAt ?? new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  db.updateCall(updatedCall);
+  emitCallUpdated(io, updatedCall);
+
+  return updatedCall;
+}
+
 function findCall(db: GuaitaDatabase, callId?: string, eventId?: string): CivilProtectionCall | undefined {
   if (callId) {
     const call = db.getCall(callId);
@@ -565,6 +609,18 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 
 function readString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function normalizeAcknowledgementBody(value: unknown) {
+  const body = asRecord(value) ?? {};
+
+  return {
+    callId: readString(body.callId) ?? readString(body.call_id),
+    eventId: readString(body.eventId) ?? readString(body.event_id),
+    incidentId: readString(body.incidentId) ?? readString(body.incident_id) ?? readString(body.inciden_id),
+    outcome: readString(body.outcome),
+    notes: readString(body.notes) ?? readString(body.note) ?? readString(body.summary)
+  };
 }
 
 function extractPostCallData(webhookBody: Record<string, unknown> | undefined) {

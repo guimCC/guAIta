@@ -33,6 +33,7 @@ Create one reusable agent. The backend sends dynamic variables for the current i
 
 - `call_id`
 - `incident_id`
+- `inciden_id` (temporary compatibility alias for a typo in the ElevenLabs tool UI)
 - `station_name`
 - `severity`
 - `confidence`
@@ -61,6 +62,9 @@ available, say it is not available in the current alert packet.
 Before ending, ask whether Civil Protection acknowledges the alert and will send
 a team. If the operator confirms, call the acknowledgement webhook with call_id,
 incident_id, outcome, and notes.
+
+After the acknowledgement tool succeeds, say that the alert has been marked as
+handled, thank the operator, and call the ElevenLabs `end_call` system tool.
 ```
 
 ## Webhooks

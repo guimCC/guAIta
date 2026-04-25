@@ -84,6 +84,7 @@ export function buildIncidentDynamicVariables(call: CivilProtectionCall, event: 
   return {
     call_id: call.id,
     incident_id: event.eventId,
+    inciden_id: event.eventId,
     event_id: event.eventId,
     station_id: station.id,
     station_name: station.name,
