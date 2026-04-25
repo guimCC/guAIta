@@ -35,7 +35,11 @@ def _safe_float(value):
     if value is None:
         return None
     try:
-        return None if (value != value) else value
+        if value != value:  # NaN
+            return None
+        if value < 0:       # sentinel from sketch
+            return None
+        return value
     except Exception:
         return None
 

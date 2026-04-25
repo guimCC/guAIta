@@ -27,7 +27,10 @@ float get_light() {
 }
 
 float get_distance() {
-    return distance.get();
+    if (!distance.available()) return -1.0;
+    int d = distance.get();
+    if (d < 0) return -1.0;
+    return (float)d;
 }
 
 
