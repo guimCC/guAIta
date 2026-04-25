@@ -93,6 +93,23 @@ h1 {
   line-height: 1.1;
 }
 
+.brand-name {
+  font-weight: 900;
+  letter-spacing: 0;
+}
+
+.brand-ai {
+  color: #22c55e;
+}
+
+.brand-i {
+  display: inline-block;
+  margin-left: 0.02em;
+  font-family: Georgia, "Times New Roman", serif;
+  font-weight: 900;
+  transform: translateY(-0.01em);
+}
+
 h2 {
   font-size: 0.88rem;
   line-height: 1.2;

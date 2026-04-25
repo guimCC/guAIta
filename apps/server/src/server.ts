@@ -19,13 +19,13 @@ export async function buildServer() {
   });
   const io = new SocketServer(app.server, {
     cors: {
-      origin: config.corsOrigins,
+      origin: config.corsOrigin,
       methods: ["GET", "POST"]
     }
   });
 
   await app.register(cors, {
-    origin: config.corsOrigins
+    origin: config.corsOrigin
   });
 
   app.addHook("onClose", async () => {

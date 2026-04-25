@@ -481,7 +481,9 @@ export function App() {
         <div className="brand-block">
           <div>
             <p className="eyebrow">Edge AI monitoring</p>
-            <h1>guAIta</h1>
+            <h1 className="brand-name">
+              gu<span className="brand-ai">A<span className="brand-i">I</span></span>ta
+            </h1>
           </div>
           <span className={`status-pill ${connectionState}`}>
             {connectionState === "connected" ? <Wifi size={14} /> : <WifiOff size={14} />}

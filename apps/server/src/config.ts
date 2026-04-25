@@ -68,10 +68,54 @@ function corsOrigins(): string[] {
     .filter(Boolean);
 }
 
+function isPrivateDevelopmentHost(hostname: string): boolean {
+  if (["localhost", "127.0.0.1", "::1", "[::1]"].includes(hostname)) {
+    return true;
+  }
+
+  if (/^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(hostname)) {
+    return true;
+  }
+
+  if (/^192\.168\.\d{1,3}\.\d{1,3}$/.test(hostname)) {
+    return true;
+  }
+
+  const match = hostname.match(/^172\.(\d{1,2})\.\d{1,3}\.\d{1,3}$/);
+  return match ? Number(match[1]) >= 16 && Number(match[1]) <= 31 : false;
+}
+
+function isAllowedCorsOrigin(origin: string | undefined): boolean {
+  if (!origin) {
+    return true;
+  }
+
+  if (config.corsOrigins.includes(origin)) {
+    return true;
+  }
+
+  if (config.nodeEnv === "production") {
+    return false;
+  }
+
+  try {
+    const url = new URL(origin);
+    return ["http:", "https:"].includes(url.protocol) && isPrivateDevelopmentHost(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function corsOrigin(origin: string | undefined, callback: (error: Error | null, allow: boolean) => void): void {
+  callback(null, isAllowedCorsOrigin(origin));
+}
+
 export const config = {
+  nodeEnv: cleanEnv("NODE_ENV") ?? "development",
   host: cleanEnv("HOST") ?? "0.0.0.0",
   port: numberEnv("PORT", 3000),
   databasePath: resolveFromRepo(cleanEnv("DATABASE_PATH") ?? "./data/guaita.db"),
   deviceToken: cleanEnv("DEVICE_TOKEN") ?? "demo-device-token",
-  corsOrigins: corsOrigins()
+  corsOrigins: corsOrigins(),
+  corsOrigin
 };
