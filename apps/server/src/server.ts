@@ -337,6 +337,202 @@ export async function buildServer() {
     }
   );
 
+  app.post("/api/summary/generate-simulation", async () => {
+    const stations = db.listStations();
+    const now = new Date();
+    const startTime = new Date(now.getTime() - 48 * 60 * 60_000); // 48 hours ago
+    
+    // Clear old events to start fresh for simulation
+    db.clearEvents();
+
+    const eventsToInsert: DetectionEvent[] = [];
+    const telemetryToInsert: TelemetryReading[] = [];
+
+    // North stations are those with higher latitude
+    const sortedStations = [...stations].sort((a, b) => b.latitude - a.latitude);
+    const northStations = sortedStations.slice(0, Math.floor(stations.length / 2));
+    const southStations = sortedStations.slice(Math.floor(stations.length / 2));
+
+    // Generate data hour by hour
+    for (let h = 0; h < 48; h++) {
+      const currentHourTime = new Date(startTime.getTime() + h * 60 * 60_000);
+      const hour = currentHourTime.getHours();
+      const isDaylight = hour >= 7 && hour <= 20;
+      
+      for (const station of stations) {
+        // Base temperature: Day is hotter, South is hotter
+        const isNorth = northStations.includes(station);
+        let temp = 15 + Math.sin((hour - 6) * Math.PI / 12) * 10; // 15-25 range
+        if (isNorth) temp -= 3; // North side is colder
+        if (!isDaylight) temp -= 5; // Night is colder
+        
+        const humidity = 60 + Math.random() * 20;
+
+        // Telemetry
+        const telemetry: TelemetryReading = {
+          telemetryId: `sim_tel_${h}_${station.id}`,
+          stationId: station.id,
+          observedAt: currentHourTime.toISOString(),
+          source: "scenario",
+          temperatureC: temp + (Math.random() * 2 - 1),
+          humidityPct: humidity,
+          lightLux: isDaylight ? (500 + Math.random() * 500) : (5 + Math.random() * 10),
+          batteryPct: 90 + Math.random() * 10
+        };
+        db.insertTelemetryReading(telemetry);
+
+        // Boar detection probability
+        // Peste Porcina behavior: 
+        // 1. Usually nocturnal (low daylight prob)
+        // 2. If sick, they look for shade/cold (North) and water
+        // 3. Occasionally disoriented in daylight
+        
+        let detectionProb = 0.05; // Base probability per hour
+        if (!isDaylight) detectionProb = 0.15; // Natural nocturnal activity
+        if (isDaylight && Math.random() < 0.1) detectionProb = 0.1; // Anomalous daylight activity (sick indicator)
+        if (temp > 22 && isNorth) detectionProb *= 2; // Seeking cold
+
+        if (Math.random() < detectionProb) {
+          const count = Math.random() > 0.8 ? Math.floor(Math.random() * 5) + 2 : 1;
+          const event: DetectionEvent = {
+            eventId: `sim_evt_${h}_${station.id}`,
+            stationId: station.id,
+            observedAt: currentHourTime.toISOString(),
+            source: "scenario",
+            species: "wild_boar",
+            confidence: 0.7 + Math.random() * 0.25,
+            count,
+            direction: Math.random() > 0.7 ? "towards_city" : "towards_forest",
+            temperatureC: temp,
+            humidityPct: humidity,
+            lightLux: telemetry.lightLux
+          };
+          db.insertEvent(event);
+        }
+      }
+    }
+
+    return {
+      ok: true,
+      message: "Generated 48 hours of synthetic Peste Porcina data."
+    };
+  });
+
+  app.get("/api/summary/expert-analysis", async () => {
+    const events = db.listEvents(500);
+    const stations = db.listStations();
+    
+    if (events.length === 0) {
+      return {
+        ok: true,
+        analysis: "No data available for analysis. Please generate simulation data first."
+      };
+    }
+
+    // Analysis logic
+    const daylightEvents = events.filter(e => {
+      const hour = new Date(e.observedAt).getHours();
+      return hour >= 8 && hour <= 19;
+    });
+
+    const towardsCityCount = events.filter(e => e.direction === "towards_city").length;
+    
+    // Group by station for Heatmap
+    const stationStats = new Map<string, { count: number; daylightCount: number; towardsCity: number }>();
+    events.forEach(e => {
+      const stats = stationStats.get(e.stationId) || { count: 0, daylightCount: 0, towardsCity: 0 };
+      const hour = new Date(e.observedAt).getHours();
+      stats.count += e.count;
+      if (hour >= 8 && hour <= 19) stats.daylightCount += e.count;
+      if (e.direction === "towards_city") stats.towardsCity += e.count;
+      stationStats.set(e.stationId, stats);
+    });
+
+    const stationMetrics = Array.from(stationStats.entries()).map(([id, s]) => ({
+      stationId: id,
+      ...s
+    }));
+
+    const topStationEntry = [...stationStats.entries()].sort((a, b) => b[1].count - a[1].count)[0];
+    const topStation = stations.find(s => s.id === topStationEntry[0]);
+
+    // Heat response & Thermal Gradient
+    const sortedStations = [...stations].sort((a, b) => b.latitude - a.latitude);
+    const northStations = sortedStations.slice(0, Math.floor(stations.length / 2));
+    const southStations = sortedStations.slice(Math.floor(stations.length / 2));
+
+    const northActivity = events.filter(e => northStations.some(s => s.id === e.stationId)).reduce((acc, e) => acc + e.count, 0);
+    const southActivity = events.filter(e => southStations.some(s => s.id === e.stationId)).reduce((acc, e) => acc + e.count, 0);
+
+    // Hourly distribution for activity chart
+    const hourlyActivity = new Array(24).fill(0);
+    events.forEach(e => {
+      const hour = new Date(e.observedAt).getHours();
+      hourlyActivity[hour] += e.count;
+    });
+    
+    // Expert Gemma Persona Text Generation
+    const daylightPct = Math.round((daylightEvents.length / events.length) * 100);
+    const riskLevel = daylightPct > 15 ? "CRITICAL" : "MODERATE";
+
+    // ----------------------------------------------------------------------
+    // PREPARED GEMMA 4 PROMPT (For future integration)
+    // ----------------------------------------------------------------------
+    const gemmaPrompt = `
+      System: You are an expert Veterinary Epidemiologist specializing in African Swine Fever (ASF).
+      Your task is to analyze sensor data from the Collserola Park and provide a concise operational report.
+
+      Data:
+      - Total Encounters (48h): ${events.reduce((acc, e) => acc + e.count, 0)}
+      - Daylight Activity: ${daylightPct}% (Healthy boars are usually nocturnal. High daylight activity indicates disorientation/virus)
+      - Hotspot: ${topStation?.name}
+      - Thermal Distribution: North (Cold/Shadow): ${northActivity}, South (Exposed/Hot): ${southActivity}
+      - Urban Pressure: ${towardsCityCount} boars moving towards the city grid.
+
+      Format the response as:
+      ### VETERINARY EPIDEMIOLOGICAL REPORT: African Swine Fever (ASF) Risk
+      **Status:** [CRITICAL or MODERATE] - Monitoring active across ${stations.length} stations.
+      
+      **1. Behavioral Anomalies:** ...
+      **2. Environmental Correlation:** ...
+      **3. Urban Pressure & Containment:** ...
+      **Expert Recommendation:** ...
+    `;
+
+    console.log("[GEMMA 4 PROMPT READY]:\n", gemmaPrompt);
+
+    // MOCKED GEMMA 4 RESPONSE (Until API is connected)
+    const analysisText = `
+### VETERINARY EPIDEMIOLOGICAL REPORT: African Swine Fever (ASF) Risk
+**Status:** ${riskLevel} - Monitoring active across ${stations.length} stations.
+
+**1. Behavioral Anomalies:**
+We have detected that **${daylightPct}%** of wild boar activity is occurring during broad daylight. In healthy populations, boars are strictly crepuscular or nocturnal. This level of daylight activity is a strong biological indicator of viral neuro-infection causing disorientation, typical of the African Swine Fever virus.
+
+**2. Environmental Correlation:**
+With temperatures hitting peaks of up to ${Math.max(...events.map(e => e.temperatureC || 0).filter(Boolean)).toFixed(1)}°C, we observed a significant clustering of detections at **${topStation?.name || topStation?.id}**. The data shows sick individuals are abandoning their usual territories to seek out the thermal shadow of the North mountain face (**${northActivity} encounters**) vs the South face (**${southActivity} encounters**).
+
+**3. Urban Pressure & Containment:**
+A total of **${towardsCityCount} detections** show movement **towards the urban grid**. This is extremely high risk. These individuals may act as vectors, potentially carrying the virus into contact with humans or pets, and eventually reaching commercial pork facilities.
+
+**Expert Recommendation:**
+Immediate deployment of "Rural Agents" to the northern perimeter of **${topStation?.name}**. Focus on areas with high humidity. Any individual seen during daylight hours should be considered infected and handled under strict biocontainment protocols.
+    `;
+
+    return {
+      ok: true,
+      analysis: analysisText.trim(),
+      metrics: {
+        daylightPct,
+        towardsCityCount,
+        topStation: topStation?.name,
+        totalCount: events.reduce((acc, e) => acc + e.count, 0),
+        thermalGradient: { north: northActivity, south: southActivity },
+        hourlyActivity
+      }
+    };
+  });
+
   app.get("/api/scenario/state", async () => ({
     scenario: scenarioEngine.getState()
   }));

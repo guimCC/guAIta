@@ -597,7 +597,7 @@ function MapPanel({
   );
 }
 
-export function App() {
+function DashboardApp() {
   const [stations, setStations] = useState<Station[]>([]);
   const [zones, setZones] = useState<Zone[]>([]);
   const [events, setEvents] = useState<DetectionEvent[]>([]);
@@ -1052,6 +1052,10 @@ export function App() {
             <RadioTower size={18} />
             {isPosting ? "Sending" : "Simulate detection"}
           </button>
+          <a href="/summary" className="primary-button" style={{ marginTop: '1rem', textDecoration: 'none', textAlign: 'center', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem', background: '#444' }}>
+             <Activity size={18} />
+             View Summary
+          </a>
         </section>
 
         <section className="panel-section">
@@ -1360,4 +1364,223 @@ export function App() {
       </section>
     </main>
   );
+}
+
+function SummaryPage() {
+  const [events, setEvents] = useState<DetectionEvent[]>([]);
+  const [telemetry, setTelemetry] = useState<TelemetryReading[]>([]);
+  const [analysis, setAnalysis] = useState<string>("");
+  const [metrics, setMetrics] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [generating, setGenerating] = useState(false);
+
+  async function loadData() {
+    setLoading(true);
+    try {
+      const [eventRes, telemetryRes, analysisRes] = await Promise.all([
+        fetchJson<EventsResponse>("/api/events?limit=500"),
+        fetchJson<TelemetryResponse>("/api/telemetry?limit=500"),
+        fetchJson<{ ok: boolean, analysis: string, metrics: any }>("/api/summary/expert-analysis")
+      ]);
+      setEvents(eventRes.events);
+      setTelemetry(telemetryRes.telemetry);
+      setAnalysis(analysisRes.analysis);
+      setMetrics(analysisRes.metrics);
+    } catch (err) {
+      console.error("Failed to load summary data", err);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadData();
+  }, []);
+
+  async function generateSimulation() {
+    setGenerating(true);
+    try {
+      const response = await fetch(apiUrl("/api/summary/generate-simulation"), {
+        method: "POST"
+      });
+      if (!response.ok) throw new Error("Failed to generate simulation");
+      await loadData();
+    } catch (err) {
+      alert("Error generating simulation data");
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  if (loading) return <div className="summary-shell" style={{ color: 'white', padding: '2rem', background: '#1c1917', minHeight: '100vh' }}>Loading expert analysis...</div>;
+
+  return (
+    <main className="summary-shell" aria-label="Summary page" style={{ padding: '2rem', color: 'white', minHeight: '100vh', background: '#1c1917' }}>
+      <header style={{ marginBottom: '2rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div>
+          <a href="/" style={{ color: '#f59e0b', textDecoration: 'none', fontSize: '0.9rem', marginBottom: '0.5rem', display: 'block' }}>← Back to Dashboard Map</a>
+          <p className="eyebrow" style={{ color: '#a3a3a3', marginBottom: '0.5rem' }}>Operational Insight</p>
+          <h1 style={{ margin: 0, fontSize: '2.5rem' }}>guAIta Expert Analysis</h1>
+        </div>
+        <button 
+          className="primary-button" 
+          onClick={generateSimulation} 
+          disabled={generating}
+          style={{ background: '#f59e0b', color: 'black', fontWeight: 'bold' }}
+        >
+          {generating ? "Generating..." : "Generate 48h Simulation Data"}
+        </button>
+      </header>
+
+      {metrics && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1.5rem', marginBottom: '2rem' }}>
+          <section className="summary-card" style={{ background: '#262626', padding: '1.5rem', borderRadius: '12px', border: '1px solid #444' }}>
+            <p className="eyebrow" style={{ color: '#a3a3a3' }}>Daylight Activity</p>
+            <strong style={{ fontSize: '2.5rem', color: metrics.daylightPct > 15 ? '#ef4444' : '#10b981' }}>{metrics.daylightPct}%</strong>
+            <div style={{ background: '#444', height: '8px', borderRadius: '4px', marginTop: '1rem' }}>
+              <div style={{ background: metrics.daylightPct > 15 ? '#ef4444' : '#10b981', width: `${metrics.daylightPct}%`, height: '100%', borderRadius: '4px' }}></div>
+            </div>
+          </section>
+          <section className="summary-card" style={{ background: '#262626', padding: '1.5rem', borderRadius: '12px', border: '1px solid #444' }}>
+            <p className="eyebrow" style={{ color: '#a3a3a3' }}>Urban Pressure</p>
+            <strong style={{ fontSize: '2.5rem', color: '#f59e0b' }}>{metrics.towardsCityCount}</strong>
+            <p style={{ margin: '0.5rem 0 0', fontSize: '0.8rem', color: '#a3a3a3' }}>Individuals moving towards city</p>
+          </section>
+          <section className="summary-card" style={{ background: '#262626', padding: '1.5rem', borderRadius: '12px', border: '1px solid #444' }}>
+            <p className="eyebrow" style={{ color: '#a3a3a3' }}>Active Hotspot</p>
+            <strong style={{ fontSize: '1.5rem', color: '#f5f5f4' }}>{metrics.topStation}</strong>
+            <p style={{ margin: '0.5rem 0 0', fontSize: '0.8rem', color: '#a3a3a3' }}>Highest encounter rate</p>
+          </section>
+          <section className="summary-card" style={{ background: '#262626', padding: '1.5rem', borderRadius: '12px', border: '1px solid #444' }}>
+            <p className="eyebrow" style={{ color: '#a3a3a3' }}>Total Bio-Events</p>
+            <strong style={{ fontSize: '2.5rem', color: '#10b981' }}>{metrics.totalCount}</strong>
+            <p style={{ margin: '0.5rem 0 0', fontSize: '0.8rem', color: '#a3a3a3' }}>Simulated 48h period</p>
+          </section>
+        </div>
+      )}
+
+      <div style={{ display: 'grid', gridTemplateColumns: '3fr 2fr', gap: '2rem' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
+          <section style={{ background: '#262626', padding: '2rem', borderRadius: '12px', border: '1px solid #444' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '1.5rem' }}>
+               <div style={{ background: '#f59e0b', width: '12px', height: '24px', borderRadius: '4px' }}></div>
+               <h2 style={{ margin: 0 }}>Expert Epidemiological Report</h2>
+            </div>
+            <div style={{ whiteSpace: 'pre-wrap', lineHeight: '1.6', color: '#d4d4d4', fontSize: '1.1rem' }}>
+              {analysis}
+            </div>
+          </section>
+
+          {metrics?.hourlyActivity && (
+            <section style={{ background: '#262626', padding: '2rem', borderRadius: '12px', border: '1px solid #444' }}>
+              <h2 style={{ marginBottom: '1.5rem', fontSize: '1.2rem' }}>Boar Activity by Hour (48h Cumulative)</h2>
+              <div style={{ display: 'flex', alignItems: 'flex-end', gap: '2px', height: '150px', paddingBottom: '20px', position: 'relative' }}>
+                {metrics.hourlyActivity.map((count: number, i: number) => {
+                  const max = Math.max(...metrics.hourlyActivity);
+                  const height = max > 0 ? (count / max) * 100 : 0;
+                  const isDaylight = i >= 8 && i <= 19;
+                  return (
+                    <div key={i} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                      <div 
+                        style={{ 
+                          width: '100%', 
+                          height: `${height}%`, 
+                          background: isDaylight ? '#f59e0b' : '#3b82f6',
+                          opacity: height > 0 ? 1 : 0.2,
+                          borderRadius: '2px 2px 0 0'
+                        }} 
+                        title={`${i}:00 - ${count} pigs`}
+                      />
+                      <span style={{ fontSize: '10px', color: '#666', marginTop: '4px' }}>{i}</span>
+                    </div>
+                  )
+                })}
+              </div>
+              <div style={{ display: 'flex', gap: '1rem', marginTop: '1rem', fontSize: '0.8rem' }}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}><div style={{ width: '8px', height: '8px', background: '#f59e0b' }}></div> Daylight</span>
+                <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}><div style={{ width: '8px', height: '8px', background: '#3b82f6' }}></div> Nocturnal</span>
+              </div>
+            </section>
+          )}
+        </div>
+
+        <section style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
+          {metrics?.thermalGradient && (
+            <div style={{ background: '#262626', padding: '1.5rem', borderRadius: '12px', border: '1px solid #444' }}>
+              <h2 style={{ marginBottom: '1.5rem', fontSize: '1.2rem' }}>Thermal Shadow Preference</h2>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+                <div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                    <span>North (Cold/Shadow)</span>
+                    <strong>{metrics.thermalGradient.north}</strong>
+                  </div>
+                  <div style={{ background: '#444', height: '12px', borderRadius: '6px' }}>
+                    <div style={{ 
+                      background: '#3b82f6', 
+                      width: `${(metrics.thermalGradient.north / (metrics.thermalGradient.north + metrics.thermalGradient.south)) * 100}%`, 
+                      height: '100%', 
+                      borderRadius: '6px' 
+                    }}></div>
+                  </div>
+                </div>
+                <div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                    <span>South (Exposed/Hot)</span>
+                    <strong>{metrics.thermalGradient.south}</strong>
+                  </div>
+                  <div style={{ background: '#444', height: '12px', borderRadius: '6px' }}>
+                    <div style={{ 
+                      background: '#ef4444', 
+                      width: `${(metrics.thermalGradient.south / (metrics.thermalGradient.north + metrics.thermalGradient.south)) * 100}%`, 
+                      height: '100%', 
+                      borderRadius: '6px' 
+                    }}></div>
+                  </div>
+                </div>
+              </div>
+              <p style={{ marginTop: '1rem', fontSize: '0.85rem', color: '#a3a3a3', fontStyle: 'italic' }}>
+                Higher activity in Northern sectors confirms biological drive to mitigate viral fever via the mountain's thermal shadow.
+              </p>
+            </div>
+          )}
+
+          <div style={{ background: '#262626', borderRadius: '12px', border: '1px solid #444', overflow: 'hidden' }}>
+            <h2 style={{ padding: '1.5rem 1rem 0.5rem', fontSize: '1.1rem' }}>Perimeter Log</h2>
+            <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse' }}>
+              <thead style={{ background: '#171717' }}>
+                <tr>
+                  <th style={{ padding: '1rem', color: '#a3a3a3' }}>Station</th>
+                  <th style={{ padding: '1rem', color: '#a3a3a3' }}>Time</th>
+                  <th style={{ padding: '1rem', color: '#a3a3a3' }}>Dir.</th>
+                </tr>
+              </thead>
+              <tbody>
+                {events.slice(0, 10).map(e => (
+                  <tr key={e.eventId} style={{ borderBottom: '1px solid #333' }}>
+                    <td style={{ padding: '1rem' }}>{e.stationId.replace('collserola-control-', '')}</td>
+                    <td style={{ padding: '1rem' }}>{new Date(e.observedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</td>
+                    <td style={{ padding: '1rem' }}>
+                      <span style={{ color: e.direction === 'towards_city' ? '#ef4444' : '#10b981' }}>
+                        {e.direction === 'towards_city' ? '↑ City' : '↓ Forest'}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+    </main>
+  );
+}
+
+export function App() {
+  const normalizedPath = window.location.pathname.replace(/\/+$/, "") || "/";
+
+  if (normalizedPath === "/summary") {
+    return <SummaryPage />;
+  }
+
+  return <DashboardApp />;
 }
