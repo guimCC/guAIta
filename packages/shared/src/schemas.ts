@@ -29,15 +29,32 @@ export const ModelInfoSchema = z.object({
   latencyMs: z.number().int().nonnegative().optional()
 });
 
+const TemperatureSchema = z.number();
+const HumidityPctSchema = z.number().min(0).max(100);
+const LightLuxSchema = z.number().nonnegative();
+const BatteryPctSchema = z.number().min(0).max(100);
+const RssiDbmSchema = z.number();
+
 const TelemetryReadingBodyShape = {
   stationId: z.string().min(1),
   observedAt: z.string().datetime(),
   source: DetectionSourceSchema,
-  temperatureC: z.number().optional(),
-  humidityPct: z.number().min(0).max(100).optional(),
-  lightLux: z.number().nonnegative().optional(),
-  batteryPct: z.number().min(0).max(100).optional(),
-  rssiDbm: z.number().optional()
+  temperatureC: TemperatureSchema.optional(),
+  humidityPct: HumidityPctSchema.optional(),
+  lightLux: LightLuxSchema.optional(),
+  batteryPct: BatteryPctSchema.optional(),
+  rssiDbm: RssiDbmSchema.optional()
+};
+
+const TelemetryReadingInputBodyShape = {
+  stationId: z.string().min(1),
+  observedAt: z.string().datetime().nullish(),
+  source: DetectionSourceSchema,
+  temperatureC: TemperatureSchema.nullish(),
+  humidityPct: HumidityPctSchema.nullish(),
+  lightLux: LightLuxSchema.nullish(),
+  batteryPct: BatteryPctSchema.nullish(),
+  rssiDbm: RssiDbmSchema.nullish()
 };
 
 function requireTelemetryValue(
@@ -74,11 +91,9 @@ export const TelemetryReadingSchema = z
 
 export const TelemetryReadingInputSchema = z
   .object({
-    ...TelemetryReadingBodyShape,
-    telemetryId: z.string().min(1).optional(),
-    observedAt: z.string().datetime().optional()
-  })
-  .superRefine(requireTelemetryValue);
+    ...TelemetryReadingInputBodyShape,
+    telemetryId: z.string().min(1).nullish()
+  });
 
 const DetectionEventBodySchema = z.object({
   stationId: z.string().min(1),
@@ -89,10 +104,10 @@ const DetectionEventBodySchema = z.object({
   count: z.number().int().positive().default(1),
   direction: DirectionSchema.optional(),
   imageUrl: z.string().url().nullable().optional(),
-  temperatureC: z.number().optional(),
-  humidityPct: z.number().min(0).max(100).optional(),
-  lightLux: z.number().nonnegative().optional(),
-  batteryPct: z.number().min(0).max(100).optional(),
+  temperatureC: TemperatureSchema.optional(),
+  humidityPct: HumidityPctSchema.optional(),
+  lightLux: LightLuxSchema.optional(),
+  batteryPct: BatteryPctSchema.optional(),
   model: ModelInfoSchema.optional()
 });
 
@@ -101,8 +116,12 @@ export const DetectionEventSchema = DetectionEventBodySchema.extend({
 });
 
 export const DetectionEventInputSchema = DetectionEventBodySchema.extend({
-  eventId: z.string().min(1).optional(),
-  observedAt: z.string().datetime().optional()
+  eventId: z.string().min(1).nullish(),
+  observedAt: z.string().datetime().nullish(),
+  temperatureC: TemperatureSchema.nullish(),
+  humidityPct: HumidityPctSchema.nullish(),
+  lightLux: LightLuxSchema.nullish(),
+  batteryPct: BatteryPctSchema.nullish()
 });
 
 export const StationSchema = z.object({

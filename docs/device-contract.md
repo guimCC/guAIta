@@ -101,6 +101,7 @@ Full telemetry payload:
 ```
 
 At least one reading field is required. If `telemetryId` or `observedAt` are missing, the server may generate them.
+Sensor reading fields may be `null`; the server treats `null` as unavailable and does not store that field.
 
 Expected telemetry response:
 
@@ -119,6 +120,16 @@ Expected telemetry response:
     "batteryPct": 82,
     "rssiDbm": -64
   }
+}
+```
+
+If every sensor reading field is missing or `null`, the server accepts the request but skips storage:
+
+```json
+{
+  "ok": true,
+  "ignored": true,
+  "reason": "no_telemetry_values"
 }
 ```
 
