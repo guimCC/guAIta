@@ -29,6 +29,17 @@ latest_metrics = {
     "humidityPct": None,
 }
 
+
+def _safe_float(value):
+    """Return None if value is None or NaN, otherwise return the value."""
+    if value is None:
+        return None
+    try:
+        return None if (value != value) else value  # NaN is the only float where x != x
+    except Exception:
+        return None
+
+
 def post_detection(confidence: float):
     try:
         r = requests.post(
@@ -38,9 +49,9 @@ def post_detection(confidence: float):
                 "source": "device",
                 "species": "wild_boar",
                 "confidence": confidence,
-                "observedAt": datetime.now(UTC).isoformat(),
-                "temperatureC": latest_metrics["temperatureC"],
-                "humidityPct": latest_metrics["humidityPct"],
+                "observedAt": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+                "temperatureC": _safe_float(latest_metrics["temperatureC"]),
+                "humidityPct": _safe_float(latest_metrics["humidityPct"]),
                 "model": {"name": "wild-boar-detector", "version": "demo-v1"},
             },
             headers=HEADERS,
@@ -57,9 +68,9 @@ def post_telemetry():
             json={
                 "stationId": STATION_ID,
                 "source": "device",
-                "observedAt": datetime.now(UTC).isoformat(),
-                "temperatureC": latest_metrics["temperatureC"],
-                "humidityPct": latest_metrics["humidityPct"],
+                "observedAt": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+                "temperatureC": _safe_float(latest_metrics["temperatureC"]),
+                "humidityPct": _safe_float(latest_metrics["humidityPct"]),
             },
             headers=HEADERS,
             timeout=5,
