@@ -10,7 +10,9 @@ ModulinoDistance distance;
 ModulinoButtons buttons;
 
 bool active = false;
-bool lastPressed = false;
+bool bbox = false;
+bool lastPressedA = false;
+bool lastPressedB = false;
 
 bool set_led_state(bool state) {
     digitalWrite(LED_BUILTIN, state ? LOW : HIGH);
@@ -40,14 +42,28 @@ float get_distance() {
 // Called by Python every loop — handles toggle logic internally
 bool get_active_state() {
     buttons.update();
-    bool pressed = buttons.isPressed(0);  // Button A
-    if (pressed && !lastPressed) {        // Rising edge only
+
+    bool pressedA = buttons.isPressed(0);
+    if (pressedA && !lastPressedA) {
         active = !active;
-        buttons.setLeds(active, false, false);  // LED A mirrors active state
+        buttons.setLeds(active, bbox, false);
     }
-    lastPressed = pressed;
+    lastPressedA = pressedA;
+
+    bool pressedB = buttons.isPressed(1);
+    if (pressedB && !lastPressedB) {
+        bbox = !bbox;
+        buttons.setLeds(active, bbox, false);
+    }
+    lastPressedB = pressedB;
+
     return active;
 }
+
+bool get_bbox_state() {
+    return bbox;
+}
+
 
 void setup() {
     pinMode(LED_BUILTIN, OUTPUT);
@@ -63,6 +79,7 @@ void setup() {
     Bridge.provide("get_light", get_light);
     Bridge.provide("get_distance", get_distance);
     Bridge.provide("get_active_state", get_active_state);
+    Bridge.provide("get_bbox_state", get_bbox_state);
 }
 
 void loop() {

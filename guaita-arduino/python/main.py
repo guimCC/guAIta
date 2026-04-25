@@ -31,6 +31,7 @@ last_detections = None
 
 # --- State ---
 active = False
+show_bounding_boxes = False  # toggled by button B, default off
 camera_is_working = False
 led_state = False
 last_metrics_post = 0
@@ -59,17 +60,21 @@ def post_detection(best_confidence: float, frame: bytes = None, detections: dict
     snapshot = None
     if frame is not None and detections is not None:
         try:
-            annotated = draw_bounding_boxes(frame, detections)
-            image_bytes = get_image_bytes(annotated)
+            if show_bounding_boxes:
+                annotated = draw_bounding_boxes(frame, detections)
+                image_bytes = get_image_bytes(annotated)
+            else:
+                image_bytes = get_image_bytes(frame)
+            
             snapshot = {
                 "contentType": "image/jpeg",
                 "encoding": "base64",
                 "data": base64.b64encode(image_bytes).decode("utf-8"),
             }
         except Exception as e:
-            print(f"[detection] snapshot encoding failed: {e}")
+            print(f"[DETECTION] snapshot encoding failed: {e}")
     else:
-        print(f"[detection] snapshot ommited")
+        print(f"[DETECTION] snapshot ommited")
 
     try:
         r = requests.post(
@@ -90,9 +95,9 @@ def post_detection(best_confidence: float, frame: bytes = None, detections: dict
             headers=HEADERS,
             timeout=10,
         )
-        print(f"[detection] status={r.status_code} body={r.text}")
+        print(f"[DETECTION] status={r.status_code} body={r.text}")
     except Exception as e:
-        print(f"[detection] failed: {e}")
+        print(f"[DETECTION] failed: {e}")
 
 def post_telemetry():
     try:
@@ -125,6 +130,7 @@ def loop():
 
     try:
         active = bool(Bridge.call("get_active_state"))
+        show_bounding_boxes = bool(Bridge.call("get_bbox_state"))
     except Exception:
         pass
 
@@ -145,7 +151,7 @@ def loop():
     _bridge_get("lightLux", "get_light")
     _bridge_get("distanceMm", "get_distance")
 
-    print(f"[state] active={active} metrics={latest_metrics}")
+    print(f"[state] active={active}, show_bbox={show_bounding_boxes}, metrics={latest_metrics}")
 
     now = time.time()
     if active and now - last_metrics_post >= METRICS_INTERVAL:
@@ -183,7 +189,7 @@ def on_all_detections(detections: dict, frame: bytes):
     if len(confidence_window) == THR_FRAMES:
         avg = sum(confidence_window) / THR_FRAMES
         if avg >= CONFIDENCE_THR:
-            print(f"[detection] window avg={avg:.2f} — firing")
+            print(f"[DETECTION] window avg={avg:.2f} bbox={show_bounding_boxes} — firing")
             ui.send_message("boar_detected", {
                 "confidence": avg,
                 "timestamp": datetime.now(UTC).isoformat(),
