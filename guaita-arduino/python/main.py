@@ -22,7 +22,7 @@ HEADERS = {
 
 # --- Detection thresholds ---
 CONFIDENCE_THR = 0.7
-THR_FRAMES = 10
+THR_FRAMES = 20
 
 # --- Detection window state ---
 confidence_window = []
@@ -68,6 +68,8 @@ def post_detection(best_confidence: float, frame: bytes = None, detections: dict
             }
         except Exception as e:
             print(f"[detection] snapshot encoding failed: {e}")
+    else:
+        print(f"[detection] snapshot ommited")
 
     try:
         r = requests.post(
@@ -156,6 +158,9 @@ def on_all_detections(detections: dict, frame: bytes):
     global camera_is_working, confidence_window, last_frame, last_detections
     camera_is_working = True
 
+    if frame is not None:
+        last_frame = frame
+
     for key, values in detections.items():
         for value in values:
             ui.send_message("frame_detected", {
@@ -172,11 +177,9 @@ def on_all_detections(detections: dict, frame: bytes):
     confidence = detections["0"][0].get("confidence") if "0" in detections else 0.0
     confidence_window.append(confidence)
 
-    # Keep as a sliding window of fixed size
     if len(confidence_window) > THR_FRAMES:
         confidence_window.pop(0)
 
-    # Only evaluate once the window is full
     if len(confidence_window) == THR_FRAMES:
         avg = sum(confidence_window) / THR_FRAMES
         if avg >= CONFIDENCE_THR:
@@ -190,12 +193,11 @@ def on_all_detections(detections: dict, frame: bytes):
             confidence_window.clear()
 
     if "0" in detections:
-        last_frame = frame
         last_detections = detections
 
 
 ui = WebUI()
-detector = VideoObjectDetection(confidence=0.0, debounce_sec=0.0, camera_preview=True)
+detector = VideoObjectDetection(confidence=0.1, debounce_sec=0.0, camera_preview=True)
 detector.on_detect_all(on_all_detections)
 ui.on_message("override_th", lambda sid, threshold: detector.override_threshold(threshold))
 
