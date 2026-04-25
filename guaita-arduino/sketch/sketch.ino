@@ -5,6 +5,9 @@
 #include <Modulino.h>
 
 ModulinoThermo thermo;
+ModulinoLight light;
+ModulinoDistance distance;
+ModulinoMovement movement;
 
 bool set_led_state(bool state) {
     digitalWrite(LED_BUILTIN, state ? LOW : HIGH);
@@ -12,27 +15,39 @@ bool set_led_state(bool state) {
 }
 
 float get_temperature() {
-    if (thermo.available()) {
-        return thermo.getTemperature();
-    }
-    return -999.0; // sentinel: Python side should treat this as None
+    return thermo.getTemperature();
 }
 
 float get_humidity() {
-    if (thermo.available()) {
-        return thermo.getHumidity();
-    }
-    return -999.0;
+    return thermo.getHumidity();
+}
+
+float get_light() {
+    return light.getLux();
+}
+
+float get_distance() {
+    return distance.get();
+}
+
+bool get_movement() {
+    return movement.update() != 0;
 }
 
 void setup() {
     pinMode(LED_BUILTIN, OUTPUT);
     Modulino.begin();
     thermo.begin();
+    light.begin();
+    distance.begin();
+    movement.begin();
     Bridge.begin();
     Bridge.provide("set_led_state", set_led_state);
     Bridge.provide("get_temperature", get_temperature);
     Bridge.provide("get_humidity", get_humidity);
+    Bridge.provide("get_light", get_light);
+    Bridge.provide("get_distance", get_distance);
+    Bridge.provide("get_movement", get_movement);
 }
 
 void loop() {

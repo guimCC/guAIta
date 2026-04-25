@@ -27,18 +27,18 @@ METRICS_INTERVAL = 30
 latest_metrics = {
     "temperatureC": None,
     "humidityPct": None,
+    "lightLux": None,
+    "distanceMm": None,
+    "movementDetected": None,
 }
 
-
 def _safe_float(value):
-    """Return None if value is None or NaN, otherwise return the value."""
     if value is None:
         return None
     try:
-        return None if (value != value) else value  # NaN is the only float where x != x
+        return None if (value != value) else value
     except Exception:
         return None
-
 
 def post_detection(confidence: float):
     try:
@@ -52,6 +52,9 @@ def post_detection(confidence: float):
                 "observedAt": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
                 "temperatureC": _safe_float(latest_metrics["temperatureC"]),
                 "humidityPct": _safe_float(latest_metrics["humidityPct"]),
+                "lightLux": _safe_float(latest_metrics["lightLux"]),
+                "distanceMm": _safe_float(latest_metrics["distanceMm"]),
+                "movementDetected": latest_metrics["movementDetected"],
                 "model": {"name": "wild-boar-detector", "version": "demo-v1"},
             },
             headers=HEADERS,
@@ -71,6 +74,9 @@ def post_telemetry():
                 "observedAt": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
                 "temperatureC": _safe_float(latest_metrics["temperatureC"]),
                 "humidityPct": _safe_float(latest_metrics["humidityPct"]),
+                "lightLux": _safe_float(latest_metrics["lightLux"]),
+                "distanceMm": _safe_float(latest_metrics["distanceMm"]),
+                "movementDetected": latest_metrics["movementDetected"],
             },
             headers=HEADERS,
             timeout=5,
@@ -78,6 +84,14 @@ def post_telemetry():
         print(f"[telemetry] status={r.status_code} body={r.text}")
     except Exception as e:
         print(f"[telemetry] failed: {e}")
+
+
+def _bridge_get(key, call_name):
+    try:
+        latest_metrics[key] = Bridge.call(call_name)
+    except Exception as e:
+        print(f"[bridge] {call_name} failed: {e}")
+
 
 def loop():
     global led_state, camera_is_working, last_metrics_post
@@ -88,11 +102,13 @@ def loop():
     except Exception:
         pass
 
-    try:
-        latest_metrics["temperatureC"] = Bridge.call("get_temperature")
-        latest_metrics["humidityPct"] = Bridge.call("get_humidity")
-    except Exception:
-        pass
+    _bridge_get("temperatureC", "get_temperature")
+    _bridge_get("humidityPct", "get_humidity")
+    _bridge_get("lightLux", "get_light")
+    _bridge_get("distanceMm", "get_distance")
+    _bridge_get("movementDetected", "get_movement")
+
+    print(f"[metrics] {latest_metrics}")
 
     now = time.time()
     if now - last_metrics_post >= METRICS_INTERVAL:
@@ -100,6 +116,7 @@ def loop():
         last_metrics_post = now
 
     time.sleep(0.1 if camera_is_working else 1.0)
+
 
 def on_all_detections(detections: dict):
     global camera_is_working
@@ -118,10 +135,10 @@ def on_all_detections(detections: dict):
             ui.send_message("boar_detected", {
                 "confidence": best_confidence,
                 "timestamp": datetime.now(UTC).isoformat(),
-                "temperatureC": latest_metrics["temperatureC"],
-                "humidityPct": latest_metrics["humidityPct"],
+                **latest_metrics,
             })
             post_detection(best_confidence)
+
 
 ui = WebUI()
 detector = VideoObjectDetection(confidence=0.5, debounce_sec=1.5)
