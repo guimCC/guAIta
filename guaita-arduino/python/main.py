@@ -28,6 +28,8 @@ THR_FRAMES = 20
 confidence_window = []
 last_frame = None
 last_detections = None
+last_stream_poll = 0
+last_stream_frame_post = 0
 
 # --- State ---
 active = False
@@ -36,6 +38,11 @@ camera_is_working = False
 led_state = False
 last_metrics_post = 0
 METRICS_INTERVAL = 30
+STREAM_POLL_INTERVAL = 1.0
+STREAM_FRAME_INTERVAL = 0.5
+STREAM_POST_TIMEOUT = 5
+stream_active = False
+stream_frame_interval = STREAM_FRAME_INTERVAL
 
 latest_metrics = {
     "temperatureC": None,
@@ -56,15 +63,18 @@ def _safe_float(value):
     except Exception:
         return None
 
+def encode_frame_image(frame: bytes, detections: dict = None):
+    if show_bounding_boxes and detections is not None:
+        annotated = draw_bounding_boxes(frame, detections)
+        return get_image_bytes(annotated)
+
+    return get_image_bytes(frame)
+
 def post_detection(best_confidence: float, frame: bytes = None, detections: dict = None):
     snapshot = None
     if frame is not None and detections is not None:
         try:
-            if show_bounding_boxes:
-                annotated = draw_bounding_boxes(frame, detections)
-                image_bytes = get_image_bytes(annotated)
-            else:
-                image_bytes = get_image_bytes(frame)
+            image_bytes = encode_frame_image(frame, detections)
             
             snapshot = {
                 "contentType": "image/jpeg",
@@ -119,6 +129,63 @@ def post_telemetry():
     except Exception as e:
         print(f"[telemetry] failed: {e}")
 
+def poll_stream_state():
+    global stream_active, stream_frame_interval
+
+    try:
+        r = requests.get(
+            f"{SERVER_URL}/api/device/stream-state",
+            params={"stationId": STATION_ID},
+            headers=HEADERS,
+            timeout=3,
+        )
+        if r.status_code != 200:
+            print(f"[stream] state status={r.status_code} body={r.text}")
+            return
+
+        stream = r.json().get("stream", {})
+        stream_active = bool(stream.get("active"))
+        frame_interval_ms = stream.get("frameIntervalMs")
+        if isinstance(frame_interval_ms, (int, float)) and frame_interval_ms > 0:
+            stream_frame_interval = max(0.25, frame_interval_ms / 1000.0)
+
+        print(f"[stream] active={stream_active} interval={stream_frame_interval:.2f}s")
+    except Exception as e:
+        print(f"[stream] state poll failed: {e}")
+
+def maybe_post_stream_frame(frame: bytes, detections: dict = None):
+    global last_stream_frame_post, stream_active
+
+    if not stream_active or frame is None:
+        return
+
+    now = time.time()
+    if now - last_stream_frame_post < stream_frame_interval:
+        return
+
+    last_stream_frame_post = now
+
+    try:
+        image_bytes = encode_frame_image(frame, detections)
+        r = requests.post(
+            f"{SERVER_URL}/api/device/stream-frames",
+            json={
+                "stationId": STATION_ID,
+                "capturedAt": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+                "contentType": "image/jpeg",
+                "encoding": "base64",
+                "data": base64.b64encode(image_bytes).decode("utf-8"),
+                "boundingBoxesEnabled": show_bounding_boxes,
+            },
+            headers=HEADERS,
+            timeout=STREAM_POST_TIMEOUT,
+        )
+        print(f"[stream] frame status={r.status_code}")
+        if r.status_code == 202:
+            stream_active = False
+    except Exception as e:
+        print(f"[stream] frame post failed: {e}")
+
 def _bridge_get(key, call_name):
     try:
         latest_metrics[key] = Bridge.call(call_name)
@@ -126,7 +193,7 @@ def _bridge_get(key, call_name):
         print(f"[bridge] {call_name} failed: {e}")
 
 def loop():
-    global led_state, camera_is_working, last_metrics_post, active
+    global led_state, camera_is_working, last_metrics_post, active, show_bounding_boxes, last_stream_poll
 
     try:
         active = bool(Bridge.call("get_active_state"))
@@ -158,6 +225,10 @@ def loop():
         post_telemetry()
         last_metrics_post = now
 
+    if now - last_stream_poll >= STREAM_POLL_INTERVAL:
+        poll_stream_state()
+        last_stream_poll = now
+
     time.sleep(0.1 if camera_is_working else 1.0)
 
 def on_all_detections(detections: dict, frame: bytes):
@@ -174,6 +245,8 @@ def on_all_detections(detections: dict, frame: bytes):
                 "confidence": value.get("confidence"),
                 "timestamp": datetime.now(UTC).isoformat(),
             })
+
+    maybe_post_stream_frame(frame, detections)
 
     if not active:
         return

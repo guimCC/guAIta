@@ -1,5 +1,6 @@
 import cors from "@fastify/cors";
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
+import { randomUUID } from "node:crypto";
 import { createReadStream, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Server as SocketServer } from "socket.io";
@@ -7,6 +8,7 @@ import {
   AcknowledgeCivilProtectionCallInputSchema,
   StartCivilProtectionCallInputSchema,
   DetectionEventInputSchema,
+  LiveStreamFrameInputSchema,
   SOCKET_EVENTS,
   TelemetryReadingInputSchema,
   type AcknowledgeCivilProtectionCallInput,
@@ -16,6 +18,9 @@ import {
   type DetectionEventInput,
   type DetectionSnapshotInput,
   type DetectionSource,
+  type LiveStreamFrame,
+  type LiveStreamFrameInput,
+  type LiveStreamSession,
   type Station,
   type TelemetryReading,
   type TelemetryReadingInput
@@ -35,6 +40,10 @@ function isDuplicateEventError(error: unknown): boolean {
 }
 
 const MAX_SNAPSHOT_BYTES = 1_000_000;
+const MAX_STREAM_FRAME_BYTES = 750_000;
+const LIVE_STREAM_TARGET_FPS = 2;
+const LIVE_STREAM_FRAME_INTERVAL_MS = Math.round(1000 / LIVE_STREAM_TARGET_FPS);
+const LIVE_STREAM_SESSION_TTL_MS = 60_000;
 const ACTIVE_ESCALATION_CALL_STATUSES = new Set<CallStatus>(["requested", "calling", "completed"]);
 const REUSABLE_CALL_STATUSES = new Set<CallStatus>(["requested", "calling", "completed", "acknowledged"]);
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -57,7 +66,21 @@ interface DeviceListenerState {
   expiresAt?: string;
 }
 
+interface DecodedLiveStreamFrame {
+  base64Data: string;
+}
+
 class SnapshotValidationError extends Error {
+  constructor(
+    readonly code: string,
+    readonly statusCode: number,
+    message: string
+  ) {
+    super(message);
+  }
+}
+
+class LiveStreamFrameValidationError extends Error {
   constructor(
     readonly code: string,
     readonly statusCode: number,
@@ -83,6 +106,10 @@ export async function buildServer() {
   });
   let deviceListenerState = createDeviceListenerState(false, "server.start");
   let deviceListenerTimer: ReturnType<typeof setTimeout> | undefined;
+  const liveStreamSessions = new Map<string, LiveStreamSession>();
+  const liveStreamExpiryTimer = setInterval(() => {
+    expireLiveStreamSessions();
+  }, 2_000);
 
   if (config.demoResetOnStart) {
     const reset = db.resetRuntimeData();
@@ -154,10 +181,101 @@ export async function buildServer() {
     if (deviceListenerTimer) {
       clearTimeout(deviceListenerTimer);
     }
+    clearInterval(liveStreamExpiryTimer);
     scenarioEngine.stop();
     io.close();
     db.close();
   });
+
+  function inactiveLiveStreamSession(stationId: string): LiveStreamSession {
+    return {
+      stationId,
+      active: false,
+      targetFps: LIVE_STREAM_TARGET_FPS,
+      frameIntervalMs: LIVE_STREAM_FRAME_INTERVAL_MS,
+      updatedAt: new Date().toISOString()
+    };
+  }
+
+  function getLiveStreamSession(stationId: string): LiveStreamSession {
+    expireLiveStreamSessions();
+    return liveStreamSessions.get(stationId) ?? inactiveLiveStreamSession(stationId);
+  }
+
+  function startLiveStreamSession(stationId: string): LiveStreamSession {
+    const now = new Date();
+    const session: LiveStreamSession = {
+      ...liveStreamSessions.get(stationId),
+      stationId,
+      active: true,
+      targetFps: LIVE_STREAM_TARGET_FPS,
+      frameIntervalMs: LIVE_STREAM_FRAME_INTERVAL_MS,
+      requestedAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+      expiresAt: new Date(now.getTime() + LIVE_STREAM_SESSION_TTL_MS).toISOString()
+    };
+
+    liveStreamSessions.set(stationId, session);
+    io.emit(SOCKET_EVENTS.streamSessionUpdated, session);
+    return session;
+  }
+
+  function stopLiveStreamSession(stationId: string): LiveStreamSession {
+    const existing = liveStreamSessions.get(stationId);
+    const session: LiveStreamSession = {
+      ...(existing ?? inactiveLiveStreamSession(stationId)),
+      stationId,
+      active: false,
+      targetFps: LIVE_STREAM_TARGET_FPS,
+      frameIntervalMs: LIVE_STREAM_FRAME_INTERVAL_MS,
+      updatedAt: new Date().toISOString()
+    };
+    delete session.expiresAt;
+
+    liveStreamSessions.set(stationId, session);
+    io.emit(SOCKET_EVENTS.streamSessionUpdated, session);
+    return session;
+  }
+
+  function stopAllLiveStreamSessions(): void {
+    for (const stationId of liveStreamSessions.keys()) {
+      stopLiveStreamSession(stationId);
+    }
+  }
+
+  function expireLiveStreamSessions(): void {
+    const nowMs = Date.now();
+
+    for (const [stationId, session] of liveStreamSessions) {
+      if (!session.active || !session.expiresAt || new Date(session.expiresAt).getTime() > nowMs) {
+        continue;
+      }
+
+      const expiredSession: LiveStreamSession = {
+        ...session,
+        active: false,
+        updatedAt: new Date().toISOString()
+      };
+      delete expiredSession.expiresAt;
+      liveStreamSessions.set(stationId, expiredSession);
+      io.emit(SOCKET_EVENTS.streamSessionUpdated, expiredSession);
+    }
+  }
+
+  function updateLiveStreamSessionAfterFrame(frame: LiveStreamFrame): LiveStreamSession {
+    const existing = liveStreamSessions.get(frame.stationId) ?? inactiveLiveStreamSession(frame.stationId);
+    const session: LiveStreamSession = {
+      ...existing,
+      updatedAt: frame.receivedAt,
+      lastFrameAt: frame.receivedAt,
+      lastFrameId: frame.frameId,
+      lastBoundingBoxesEnabled: frame.boundingBoxesEnabled
+    };
+
+    liveStreamSessions.set(frame.stationId, session);
+    io.emit(SOCKET_EVENTS.streamSessionUpdated, session);
+    return session;
+  }
 
   app.get("/health", async () => ({
     ok: true,
@@ -215,9 +333,86 @@ export async function buildServer() {
     telemetry: db.listLatestTelemetryReadings()
   }));
 
+  app.get("/api/streams/:stationId", async (request: FastifyRequest<{ Params: { stationId: string } }>, reply) => {
+    if (!db.getStation(request.params.stationId)) {
+      return reply.code(404).send({
+        ok: false,
+        error: "unknown_station",
+        stationId: request.params.stationId
+      });
+    }
+
+    return {
+      ok: true,
+      stream: getLiveStreamSession(request.params.stationId)
+    };
+  });
+
+  app.post("/api/streams/:stationId/start", async (request: FastifyRequest<{ Params: { stationId: string } }>, reply) => {
+    if (!db.getStation(request.params.stationId)) {
+      return reply.code(404).send({
+        ok: false,
+        error: "unknown_station",
+        stationId: request.params.stationId
+      });
+    }
+
+    return {
+      ok: true,
+      stream: startLiveStreamSession(request.params.stationId)
+    };
+  });
+
+  app.post("/api/streams/:stationId/stop", async (request: FastifyRequest<{ Params: { stationId: string } }>, reply) => {
+    if (!db.getStation(request.params.stationId)) {
+      return reply.code(404).send({
+        ok: false,
+        error: "unknown_station",
+        stationId: request.params.stationId
+      });
+    }
+
+    return {
+      ok: true,
+      stream: stopLiveStreamSession(request.params.stationId)
+    };
+  });
+
   app.get("/api/device/listening", async () => ({
     deviceListening: deviceListenerState
   }));
+
+  app.get("/api/device/stream-state", async (request: FastifyRequest<{ Querystring: { stationId?: string } }>, reply) => {
+    const authorization = request.headers.authorization;
+
+    if (authorization !== `Bearer ${config.deviceToken}`) {
+      return reply.code(401).send({
+        ok: false,
+        error: "unauthorized"
+      });
+    }
+
+    const stationId = request.query.stationId?.trim();
+    if (!stationId) {
+      return reply.code(400).send({
+        ok: false,
+        error: "missing_station_id"
+      });
+    }
+
+    if (!db.getStation(stationId)) {
+      return reply.code(404).send({
+        ok: false,
+        error: "unknown_station",
+        stationId
+      });
+    }
+
+    return {
+      ok: true,
+      stream: getLiveStreamSession(stationId)
+    };
+  });
 
   app.put("/api/device/listening", async (request, reply) => {
     const body = request.body as { enabled?: unknown } | undefined;
@@ -239,6 +434,7 @@ export async function buildServer() {
   app.post("/api/demo/reset", async () => {
     const reset = db.resetRuntimeData();
     emitRuntimeReset(reset);
+    stopAllLiveStreamSessions();
     const scenario = scenarioEngine.reset();
 
     return {
@@ -577,6 +773,68 @@ export async function buildServer() {
     }
 
     return createTelemetryReading(request, reply, "device", db, io);
+  });
+
+  app.post("/api/device/stream-frames", async (request, reply) => {
+    const authorization = request.headers.authorization;
+
+    if (authorization !== `Bearer ${config.deviceToken}`) {
+      return reply.code(401).send({
+        ok: false,
+        error: "unauthorized"
+      });
+    }
+
+    const parsed = LiveStreamFrameInputSchema.safeParse(request.body);
+
+    if (!parsed.success) {
+      return reply.code(400).send({
+        ok: false,
+        error: "invalid_stream_frame",
+        issues: parsed.error.flatten()
+      });
+    }
+
+    const station = db.getStation(parsed.data.stationId);
+    if (!station) {
+      return reply.code(404).send({
+        ok: false,
+        error: "unknown_station",
+        stationId: parsed.data.stationId
+      });
+    }
+
+    const session = getLiveStreamSession(parsed.data.stationId);
+    if (!session.active) {
+      return reply.code(202).send({
+        ok: true,
+        ignored: true,
+        reason: "stream_inactive",
+        stream: session
+      });
+    }
+
+    try {
+      const frame = createLiveStreamFrame(parsed.data);
+      updateLiveStreamSessionAfterFrame(frame);
+      io.emit(SOCKET_EVENTS.streamFrame, frame);
+
+      return reply.code(201).send({
+        ok: true,
+        frameId: frame.frameId,
+        stream: getLiveStreamSession(frame.stationId)
+      });
+    } catch (error) {
+      if (error instanceof LiveStreamFrameValidationError) {
+        return reply.code(error.statusCode).send({
+          ok: false,
+          error: error.code,
+          message: error.message
+        });
+      }
+
+      throw error;
+    }
   });
 
   app.post("/api/manual/events", async (request, reply) => {
@@ -972,6 +1230,51 @@ function storeDetection(input: DetectionEventInput, db: GuaitaDatabase, io: Sock
   return {
     event,
     severity
+  };
+}
+
+function createLiveStreamFrame(input: LiveStreamFrameInput): LiveStreamFrame {
+  const receivedAt = new Date().toISOString();
+  const decodedFrame = decodeLiveStreamFrame(input);
+
+  return {
+    stationId: input.stationId,
+    frameId: `frm_${Date.now().toString(36)}_${randomUUID().slice(0, 8)}`,
+    capturedAt: input.capturedAt ?? receivedAt,
+    receivedAt,
+    contentType: input.contentType,
+    dataUrl: `data:${input.contentType};base64,${decodedFrame.base64Data}`,
+    boundingBoxesEnabled: input.boundingBoxesEnabled ?? false
+  };
+}
+
+function decodeLiveStreamFrame(input: LiveStreamFrameInput): DecodedLiveStreamFrame {
+  const base64Data = input.data
+    .trim()
+    .replace(/^data:image\/jpeg;base64,/i, "")
+    .replace(/\s/g, "");
+
+  if (!base64Data || base64Data.length % 4 === 1 || !/^[A-Za-z0-9+/]*={0,2}$/.test(base64Data)) {
+    throw new LiveStreamFrameValidationError("invalid_stream_frame", 400, "Stream frame data must be valid base64 JPEG bytes.");
+  }
+
+  const paddedData = base64Data.padEnd(Math.ceil(base64Data.length / 4) * 4, "=");
+  const imageBuffer = Buffer.from(paddedData, "base64");
+
+  if (imageBuffer.length === 0) {
+    throw new LiveStreamFrameValidationError("invalid_stream_frame", 400, "Stream frame image is empty.");
+  }
+
+  if (imageBuffer.length > MAX_STREAM_FRAME_BYTES) {
+    throw new LiveStreamFrameValidationError("stream_frame_too_large", 413, "Stream frame image must be 750 KB or smaller.");
+  }
+
+  if (imageBuffer[0] !== 0xff || imageBuffer[1] !== 0xd8) {
+    throw new LiveStreamFrameValidationError("invalid_stream_frame", 400, "Stream frame must be a JPEG image.");
+  }
+
+  return {
+    base64Data: imageBuffer.toString("base64")
   };
 }
 

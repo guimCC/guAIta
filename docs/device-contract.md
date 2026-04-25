@@ -133,6 +133,40 @@ If every sensor reading field is missing or `null`, the server accepts the reque
 }
 ```
 
+## Live Stream Endpoints
+
+The dashboard can request low-rate live camera frames from a station. The Arduino does not expose an inbound stream. It polls the server for stream state and uploads JPEG frames only while a dashboard session is active.
+
+Device polling:
+
+```text
+GET {SERVER_URL}/api/device/stream-state?stationId={STATION_ID}
+Authorization: Bearer {DEVICE_TOKEN}
+```
+
+Frame upload:
+
+```text
+POST {SERVER_URL}/api/device/stream-frames
+Authorization: Bearer {DEVICE_TOKEN}
+Content-Type: application/json
+```
+
+Minimum frame payload:
+
+```json
+{
+  "stationId": "collserola-control-02",
+  "capturedAt": "2026-04-26T08:10:01.000Z",
+  "contentType": "image/jpeg",
+  "encoding": "base64",
+  "data": "/9j/4AAQSkZJRgABAQAAAQABAAD...",
+  "boundingBoxesEnabled": false
+}
+```
+
+See [Device Live Stream Contract](device-live-stream-contract.md) for limits and session behavior.
+
 ## Minimum Payload
 
 This is enough for the hardware team to start sending real detections:
@@ -189,6 +223,7 @@ If `eventId` or `observedAt` are missing, the server may generate them.
 - `direction`: optional movement estimate such as `towards_city`, `towards_forest`, `left_to_right`, or `unknown`.
 - `snapshot`: optional JPEG or PNG snapshot encoded as base64 in the same JSON request. See [Device Image Snapshot Contract](device-image-snapshot-contract.md).
 - `imageUrl`: server-generated URL returned when a snapshot is accepted. The device should not send this field.
+- live frames: separate from detection snapshots. Frames are posted only to `/api/device/stream-frames` while a dashboard stream session is active.
 - `temperatureC`: optional temperature reading.
 - `humidityPct`: optional humidity reading from `0` to `100`.
 - `lightLux`: optional non-negative light reading.
@@ -211,6 +246,8 @@ Use this first for the physical Arduino UNO Q demo device:
 ```text
 collserola-control-02
 ```
+
+For hackathon speed, `SERVER_URL`, `DEVICE_TOKEN`, and `STATION_ID` are currently code constants in `guaita-arduino/python/main.py`.
 
 Other seeded stations currently available for simulation/demo work:
 
