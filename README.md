@@ -12,7 +12,7 @@ Edge AI monitoring proof of concept for Collserola wild boar detection and opera
 - [docs/architecture.md](docs/architecture.md): proposed backend, frontend, realtime, and scenario architecture.
 - [docs/local-development.md](docs/local-development.md): npm, build, dev, health check, and ngrok commands.
 - [docs/device-contract.md](docs/device-contract.md): Arduino/UNO Q to server JSON contract.
-- [docs/device-image-snapshot-contract.md](docs/device-image-snapshot-contract.md): planned v2 snapshot upload contract.
+- [docs/device-image-snapshot-contract.md](docs/device-image-snapshot-contract.md): optional inline JPEG snapshot contract for device detections.
 - [docs/local-tunnel.md](docs/local-tunnel.md): ngrok/local tunnel guidance.
 - [docs/demo-story.md](docs/demo-story.md): 3-minute demo narrative.
 - [docs/business-impact.md](docs/business-impact.md): sourced PPA business-impact numbers and patrol cost model.

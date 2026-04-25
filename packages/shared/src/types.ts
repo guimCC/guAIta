@@ -6,6 +6,7 @@ import type {
   AcknowledgeCivilProtectionCallInputSchema,
   DetectionEventInputSchema,
   DetectionEventSchema,
+  DetectionSnapshotInputSchema,
   DetectionSourceSchema,
   DirectionSchema,
   RecommendedActionSchema,
@@ -35,6 +36,7 @@ export type StationType = z.infer<typeof StationTypeSchema>;
 export type ZoneKind = z.infer<typeof ZoneKindSchema>;
 export type Direction = z.infer<typeof DirectionSchema>;
 
+export type DetectionSnapshotInput = z.infer<typeof DetectionSnapshotInputSchema>;
 export type DetectionEvent = z.infer<typeof DetectionEventSchema>;
 export type DetectionEventInput = z.infer<typeof DetectionEventInputSchema>;
 export type TelemetryReading = z.infer<typeof TelemetryReadingSchema>;

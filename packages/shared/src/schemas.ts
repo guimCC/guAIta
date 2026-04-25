@@ -29,6 +29,14 @@ export const ModelInfoSchema = z.object({
   latencyMs: z.number().int().nonnegative().optional()
 });
 
+export const DetectionSnapshotInputSchema = z
+  .object({
+    contentType: z.enum(["image/jpeg", "image/png"]),
+    encoding: z.literal("base64"),
+    data: z.string().min(1).max(1_500_000)
+  })
+  .strict();
+
 const TemperatureSchema = z.number();
 const HumidityPctSchema = z.number().min(0).max(100);
 const LightLuxSchema = z.number().nonnegative();
@@ -118,6 +126,7 @@ export const DetectionEventSchema = DetectionEventBodySchema.extend({
 export const DetectionEventInputSchema = DetectionEventBodySchema.extend({
   eventId: z.string().min(1).nullish(),
   observedAt: z.string().datetime().nullish(),
+  snapshot: DetectionSnapshotInputSchema.nullish(),
   temperatureC: TemperatureSchema.nullish(),
   humidityPct: HumidityPctSchema.nullish(),
   lightLux: LightLuxSchema.nullish(),
