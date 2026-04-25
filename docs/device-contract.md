@@ -135,7 +135,7 @@ If every sensor reading field is missing or `null`, the server accepts the reque
 
 ## Live Stream Endpoints
 
-The dashboard can request low-rate live camera frames from a station. The Arduino does not expose an inbound stream. It polls the server for stream state and uploads JPEG frames only while a dashboard session is active.
+The dashboard can request low-rate live camera frames from a station. The Arduino does not expose an inbound stream. It polls the server for stream state and uploads JPEG or PNG frames only while a dashboard session is active.
 
 Device polling:
 
@@ -144,17 +144,29 @@ GET {SERVER_URL}/api/device/stream-state?stationId={STATION_ID}
 Authorization: Bearer {DEVICE_TOKEN}
 ```
 
-Frame upload:
+Primary frame upload:
+
+```text
+POST {SERVER_URL}/api/device/stream-frames/pipe?stationId={STATION_ID}
+Authorization: Bearer {DEVICE_TOKEN}
+Content-Type: multipart/x-mixed-replace; boundary=guaita-upload-frame
+```
+
+Body: a persistent multipart stream of raw image parts. JPEG is preferred; PNG is accepted. The Arduino Python sender attempts to convert PNG bytes to smaller JPEG frames when Pillow is installed.
+
+Fallback single-frame upload:
 
 ```text
 POST {SERVER_URL}/api/device/stream-frames/raw?stationId={STATION_ID}
 Authorization: Bearer {DEVICE_TOKEN}
-Content-Type: image/jpeg
+Content-Type: image/jpeg or image/png
 ```
 
-Body: raw JPEG bytes.
+Body: raw JPEG or PNG bytes. The server sniffs the actual image signature before relaying it to the dashboard image stream.
 
-The server still accepts the older JSON/base64 endpoint at `/api/device/stream-frames`, but the Arduino app uses the raw endpoint for lower latency.
+The dashboard renders frames through `GET /api/streams/{stationId}/image-stream`, a multipart image stream consumed directly by the browser image element. Socket.IO carries stream status and bounding-box metadata only.
+
+The server still accepts the older JSON/base64 endpoint at `/api/device/stream-frames`, but the Arduino app uses the persistent pipe for lower latency.
 
 Legacy JSON payload:
 
@@ -162,9 +174,9 @@ Legacy JSON payload:
 {
   "stationId": "collserola-control-02",
   "capturedAt": "2026-04-26T08:10:01.000Z",
-  "contentType": "image/jpeg",
+  "contentType": "image/png",
   "encoding": "base64",
-  "data": "/9j/4AAQSkZJRgABAQAAAQABAAD...",
+  "data": "iVBORw0KGgoAAAANSUhEUgAA...",
   "boundingBoxesEnabled": false,
   "boxes": []
 }
@@ -228,7 +240,7 @@ If `eventId` or `observedAt` are missing, the server may generate them.
 - `direction`: optional movement estimate such as `towards_city`, `towards_forest`, `left_to_right`, or `unknown`.
 - `snapshot`: optional JPEG or PNG snapshot encoded as base64 in the same JSON request. See [Device Image Snapshot Contract](device-image-snapshot-contract.md).
 - `imageUrl`: server-generated URL returned when a snapshot is accepted. The device should not send this field.
-- live frames: separate from detection snapshots. Frames are posted only to `/api/device/stream-frames` while a dashboard stream session is active.
+- live frames: separate from detection snapshots. Frames are uploaded only to `/api/device/stream-frames/pipe` or `/api/device/stream-frames/raw` while a dashboard stream session is active.
 - `temperatureC`: optional temperature reading.
 - `humidityPct`: optional humidity reading from `0` to `100`.
 - `lightLux`: optional non-negative light reading.

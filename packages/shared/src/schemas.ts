@@ -56,7 +56,7 @@ export const LiveStreamFrameInputSchema = z
   .object({
     stationId: z.string().min(1),
     capturedAt: z.string().datetime().nullish(),
-    contentType: z.enum(["image/jpeg"]),
+    contentType: z.enum(["image/jpeg", "image/png"]),
     encoding: z.literal("base64"),
     data: z.string().min(1).max(1_050_000),
     boundingBoxesEnabled: z.boolean().optional(),
@@ -86,7 +86,7 @@ export const LiveStreamFrameSchema = z
     frameId: z.string().min(1),
     capturedAt: z.string().datetime(),
     receivedAt: z.string().datetime(),
-    contentType: z.enum(["image/jpeg"]),
+    contentType: z.enum(["image/jpeg", "image/png"]),
     dataUrl: z.string().min(1).optional(),
     boundingBoxesEnabled: z.boolean(),
     frameWidth: z.number().int().positive().optional(),

@@ -1666,6 +1666,12 @@ dd {
   place-items: center;
 }
 
+.live-frame-empty.overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(12, 10, 9, 0.62);
+}
+
 .live-frame-empty svg {
   color: #fde68a;
 }

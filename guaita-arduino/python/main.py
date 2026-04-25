@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: MPL-2.0
 from datetime import datetime, UTC
 import base64
+from io import BytesIO
 import json
 import requests
 import threading
@@ -11,6 +12,11 @@ from arduino.app_utils import *
 from arduino.app_utils.image import get_image_bytes
 from arduino.app_bricks.web_ui import WebUI
 from arduino.app_bricks.video_objectdetection import VideoObjectDetection
+
+try:
+    from PIL import Image
+except Exception:
+    Image = None
 
 # --- Device contract config ---
 SERVER_URL = "https://uncordial-mathias-infirmly.ngrok-free.dev"
@@ -33,6 +39,7 @@ last_detections = None
 last_stream_poll = 0
 last_stream_frame_post = 0
 last_state_print = 0
+last_stream_wait_print = 0
 
 # --- State ---
 active = False
@@ -48,6 +55,10 @@ STREAM_CONNECT_TIMEOUT = 0.5
 STREAM_READ_TIMEOUT = 1.2
 STREAM_WORKER_SLEEP = 0.03
 STATE_PRINT_INTERVAL = 2.0
+STREAM_WAIT_PRINT_INTERVAL = 2.0
+STREAM_UPLOAD_BOUNDARY = "guaita-upload-frame"
+STREAM_JPEG_MAX_WIDTH = 320
+STREAM_JPEG_QUALITY = 55
 stream_active = False
 stream_frame_interval = STREAM_FRAME_INTERVAL
 stream_lock = threading.Lock()
@@ -77,8 +88,36 @@ def _safe_float(value):
     except Exception:
         return None
 
-def encode_frame_image(frame: bytes):
-    return get_image_bytes(frame)
+def image_content_type(image_bytes: bytes):
+    if image_bytes.startswith(b"\xff\xd8"):
+        return "image/jpeg"
+    if image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    return None
+
+def jpeg_upload_image(image_bytes: bytes):
+    content_type = image_content_type(image_bytes)
+    if content_type == "image/jpeg" or Image is None:
+        return image_bytes, content_type
+
+    try:
+        with Image.open(BytesIO(image_bytes)) as image:
+            image.thumbnail((STREAM_JPEG_MAX_WIDTH, STREAM_JPEG_MAX_WIDTH))
+            if image.mode != "RGB":
+                image = image.convert("RGB")
+
+            output = BytesIO()
+            image.save(output, format="JPEG", quality=STREAM_JPEG_QUALITY, optimize=False)
+            jpeg_bytes = output.getvalue()
+            if len(jpeg_bytes) < len(image_bytes):
+                return jpeg_bytes, "image/jpeg"
+    except Exception as e:
+        print(f"[stream] jpeg conversion skipped: {e}")
+
+    return image_bytes, content_type
+
+def encode_upload_image(frame: bytes):
+    return jpeg_upload_image(get_image_bytes(frame))
 
 def _safe_number(value):
     try:
@@ -127,7 +166,16 @@ def extract_stream_boxes(detections: dict):
 
             source = value.get("bounding_box") or value.get("bbox") or value
             if not isinstance(source, dict):
-                continue
+                xyxy = value.get("bounding_box_xyxy")
+                if isinstance(xyxy, (list, tuple)) and len(xyxy) >= 4:
+                    source = {
+                        "x": xyxy[0],
+                        "y": xyxy[1],
+                        "x2": xyxy[2],
+                        "y2": xyxy[3],
+                    }
+                else:
+                    continue
 
             x = _first_number(source, ["x", "left", "xmin", "x_min"])
             y = _first_number(source, ["y", "top", "ymin", "y_min"])
@@ -165,10 +213,12 @@ def post_detection(best_confidence: float, frame: bytes = None, detections: dict
     snapshot = None
     if frame is not None and detections is not None:
         try:
-            image_bytes = encode_frame_image(frame)
+            image_bytes, content_type = encode_upload_image(frame)
+            if content_type is None:
+                raise ValueError("camera image bytes are not JPEG or PNG")
             
             snapshot = {
-                "contentType": "image/jpeg",
+                "contentType": content_type,
                 "encoding": "base64",
                 "data": base64.b64encode(image_bytes).decode("utf-8"),
             }
@@ -259,67 +309,121 @@ def maybe_post_stream_frame(frame: bytes, detections: dict = None):
         latest_stream_bbox_state = show_bounding_boxes
         latest_stream_sequence += 1
 
-def stream_worker_loop():
-    global last_stream_poll, last_stream_frame_post, posted_stream_sequence, stream_active
+def build_stream_frame_part():
+    global last_stream_frame_post, posted_stream_sequence, last_stream_wait_print
 
-    session = requests.Session()
+    now = time.time()
+    if now - last_stream_frame_post < stream_frame_interval:
+        return None
+
+    with stream_lock:
+        frame = latest_stream_frame
+        detections = latest_stream_detections
+        captured_at = latest_stream_captured_at
+        bbox_state = latest_stream_bbox_state
+        sequence = latest_stream_sequence
+
+    if frame is None and last_frame is not None:
+        frame = last_frame
+        detections = last_detections
+        captured_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        bbox_state = show_bounding_boxes
+        sequence = -1
+
+    if frame is None:
+        if now - last_stream_wait_print >= STREAM_WAIT_PRINT_INTERVAL:
+            print("[stream] active but no camera frame has reached the detection callback yet")
+            last_stream_wait_print = now
+        return None
+
+    if sequence == posted_stream_sequence and sequence != -1:
+        return None
+
+    try:
+        image_bytes, content_type = encode_upload_image(frame)
+        if content_type is None:
+            print("[stream] skipped frame: camera image bytes are not JPEG or PNG")
+            return None
+
+        frame_width, frame_height = frame_dimensions(frame)
+        boxes = extract_stream_boxes(detections) if bbox_state else []
+        headers = [
+            f"--{STREAM_UPLOAD_BOUNDARY}",
+            f"Content-Type: {content_type}",
+            f"Content-Length: {len(image_bytes)}",
+            f"X-Guaita-Captured-At: {captured_at or datetime.now(UTC).strftime('%Y-%m-%dT%H:%M:%S.000Z')}",
+            f"X-Guaita-Bounding-Boxes-Enabled: {'true' if bbox_state else 'false'}",
+        ]
+        if frame_width is not None and frame_height is not None:
+            headers.append(f"X-Guaita-Frame-Width: {frame_width}")
+            headers.append(f"X-Guaita-Frame-Height: {frame_height}")
+        if boxes:
+            headers.append(f"X-Guaita-Boxes: {json.dumps(boxes, separators=(',', ':'))}")
+
+        posted_stream_sequence = sequence
+        last_stream_frame_post = now
+        return ("\r\n".join(headers) + "\r\n\r\n").encode("utf-8") + image_bytes + b"\r\n"
+    except Exception as e:
+        print(f"[stream] frame build failed: {e}")
+        return None
+
+def stream_frame_parts(state_session):
+    global last_stream_poll
+
+    frame_count = 0
+    while stream_active:
+        now = time.time()
+        if now - last_stream_poll >= STREAM_ACTIVE_POLL_INTERVAL:
+            poll_stream_state(state_session)
+            last_stream_poll = now
+            if not stream_active:
+                break
+
+        part = build_stream_frame_part()
+        if part is None:
+            time.sleep(STREAM_WORKER_SLEEP)
+            continue
+
+        frame_count += 1
+        if frame_count == 1 or frame_count % 10 == 0:
+            print(f"[stream] pipe sent frames={frame_count}")
+        yield part
+
+    yield f"--{STREAM_UPLOAD_BOUNDARY}--\r\n".encode("utf-8")
+
+def stream_worker_loop():
+    global last_stream_poll, stream_active
+
+    state_session = requests.Session()
+    upload_session = requests.Session()
 
     while True:
         now = time.time()
 
-        stream_poll_interval = STREAM_ACTIVE_POLL_INTERVAL if stream_active else STREAM_IDLE_POLL_INTERVAL
-        if now - last_stream_poll >= stream_poll_interval:
-            poll_stream_state(session)
+        if not stream_active and now - last_stream_poll >= STREAM_IDLE_POLL_INTERVAL:
+            poll_stream_state(state_session)
             last_stream_poll = now
 
-        if not stream_active or now - last_stream_frame_post < stream_frame_interval:
+        if not stream_active:
             time.sleep(STREAM_WORKER_SLEEP)
             continue
-
-        with stream_lock:
-            frame = latest_stream_frame
-            detections = latest_stream_detections
-            captured_at = latest_stream_captured_at
-            bbox_state = latest_stream_bbox_state
-            sequence = latest_stream_sequence
-
-        if frame is None or sequence == posted_stream_sequence:
-            time.sleep(STREAM_WORKER_SLEEP)
-            continue
-
-        last_stream_frame_post = now
 
         try:
-            image_bytes = encode_frame_image(frame)
-            frame_width, frame_height = frame_dimensions(frame)
-            boxes = extract_stream_boxes(detections) if bbox_state else []
-            params = {
-                "stationId": STATION_ID,
-                "capturedAt": captured_at or datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
-                "boundingBoxesEnabled": "true" if bbox_state else "false",
-            }
-            if frame_width is not None and frame_height is not None:
-                params["frameWidth"] = str(frame_width)
-                params["frameHeight"] = str(frame_height)
-            stream_headers = {
-                "Authorization": f"Bearer {DEVICE_TOKEN}",
-                "Content-Type": "image/jpeg",
-            }
-            if boxes:
-                stream_headers["X-Guaita-Boxes"] = json.dumps(boxes, separators=(",", ":"))
-            r = session.post(
-                f"{SERVER_URL}/api/device/stream-frames/raw",
-                params=params,
-                data=image_bytes,
-                headers=stream_headers,
-                timeout=(STREAM_CONNECT_TIMEOUT, STREAM_READ_TIMEOUT),
+            print("[stream] opening persistent frame pipe")
+            r = upload_session.post(
+                f"{SERVER_URL}/api/device/stream-frames/pipe",
+                params={"stationId": STATION_ID},
+                data=stream_frame_parts(state_session),
+                headers={
+                    "Authorization": f"Bearer {DEVICE_TOKEN}",
+                    "Content-Type": f"multipart/x-mixed-replace; boundary={STREAM_UPLOAD_BOUNDARY}",
+                },
+                timeout=(STREAM_CONNECT_TIMEOUT, 5.0),
             )
-            posted_stream_sequence = sequence
-            print(f"[stream] frame status={r.status_code}")
-            if r.status_code == 202:
-                stream_active = False
+            print(f"[stream] pipe closed status={r.status_code} body={r.text}")
         except Exception as e:
-            print(f"[stream] frame post failed: {e}")
+            print(f"[stream] pipe failed: {e}")
+            stream_active = False
 
         time.sleep(STREAM_WORKER_SLEEP)
 
