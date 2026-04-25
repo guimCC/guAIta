@@ -43,6 +43,7 @@ function isDuplicateEventError(error: unknown): boolean {
 
 const MAX_SNAPSHOT_BYTES = 1_000_000;
 const MAX_STREAM_FRAME_BYTES = 750_000;
+const LIVE_STREAM_PIPE_BODY_LIMIT_BYTES = 250_000_000;
 const LIVE_STREAM_TARGET_FPS = 2;
 const LIVE_STREAM_FRAME_INTERVAL_MS = Math.round(1000 / LIVE_STREAM_TARGET_FPS);
 const LIVE_STREAM_SESSION_TTL_MS = 60_000;
@@ -1085,16 +1086,16 @@ export async function buildServer() {
     }
   );
 
-  app.post(
+  app.post<{
+    Querystring: {
+      stationId?: string;
+    };
+  }>(
     "/api/device/stream-frames/pipe",
-    async (
-      request: FastifyRequest<{
-        Querystring: {
-          stationId?: string;
-        };
-      }>,
-      reply
-    ) => {
+    {
+      bodyLimit: LIVE_STREAM_PIPE_BODY_LIMIT_BYTES
+    },
+    async (request, reply) => {
       const authorization = request.headers.authorization;
 
       if (authorization !== `Bearer ${config.deviceToken}`) {

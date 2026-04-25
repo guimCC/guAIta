@@ -59,6 +59,7 @@ STREAM_WAIT_PRINT_INTERVAL = 2.0
 STREAM_UPLOAD_BOUNDARY = "guaita-upload-frame"
 STREAM_JPEG_MAX_WIDTH = 320
 STREAM_JPEG_QUALITY = 55
+STREAM_PIPE_MAX_SECONDS = 45.0
 stream_active = False
 stream_frame_interval = STREAM_FRAME_INTERVAL
 stream_lock = threading.Lock()
@@ -371,8 +372,13 @@ def stream_frame_parts(state_session):
     global last_stream_poll
 
     frame_count = 0
+    started_at = time.time()
     while stream_active:
         now = time.time()
+        if now - started_at >= STREAM_PIPE_MAX_SECONDS:
+            print("[stream] rotating persistent frame pipe")
+            break
+
         if now - last_stream_poll >= STREAM_ACTIVE_POLL_INTERVAL:
             poll_stream_state(state_session)
             last_stream_poll = now
@@ -421,8 +427,13 @@ def stream_worker_loop():
                 timeout=(STREAM_CONNECT_TIMEOUT, 5.0),
             )
             print(f"[stream] pipe closed status={r.status_code} body={r.text}")
+            if r.status_code >= 400:
+                upload_session.close()
+                upload_session = requests.Session()
         except Exception as e:
             print(f"[stream] pipe failed: {e}")
+            upload_session.close()
+            upload_session = requests.Session()
             stream_active = False
 
         time.sleep(STREAM_WORKER_SLEEP)

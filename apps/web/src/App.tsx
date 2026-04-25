@@ -1181,7 +1181,8 @@ function LiveStreamViewer({
   streamUrl,
   nowMs,
   error,
-  onClose
+  onClose,
+  onReconnectStream
 }: {
   station: Station | undefined;
   session: LiveStreamSession | undefined;
@@ -1190,6 +1191,7 @@ function LiveStreamViewer({
   nowMs: number;
   error: string | null;
   onClose: () => void;
+  onReconnectStream: () => void;
 }) {
   const status = liveStreamStatus(session, frame, nowMs);
   const stationName = station?.name ?? session?.stationId ?? frame?.stationId ?? "Station camera";
@@ -1215,7 +1217,7 @@ function LiveStreamViewer({
       <div className="live-frame-stage">
         {streamUrl ? (
           <>
-            <img src={streamUrl} alt={`Live camera feed from ${stationName}`} />
+            <img src={streamUrl} alt={`Live camera feed from ${stationName}`} onError={onReconnectStream} />
             {frame && boxes.length ? (
               <div className="live-box-overlay" aria-hidden="true">
                 {boxes.map((box, index) => (
@@ -1476,6 +1478,7 @@ export function App() {
   const listenFromDeviceRef = useRef(false);
   const ignoredDeviceEventIdsRef = useRef<Set<string>>(new Set());
   const activeStreamStationIdRef = useRef<string | null>(null);
+  const lastStreamReconnectAtRef = useRef(0);
 
   const stationById = useMemo(() => new Map(stations.map((station) => [station.id, station])), [stations]);
   const latestTelemetryByStation = useMemo(() => {
@@ -1626,6 +1629,14 @@ export function App() {
         return nextFrames;
       });
       void stopLiveStream(stationId);
+    }
+  }
+
+  function reconnectLiveStreamImage() {
+    const now = Date.now();
+    if (activeStreamStationIdRef.current && now - lastStreamReconnectAtRef.current > 1_500) {
+      lastStreamReconnectAtRef.current = now;
+      setStreamViewerKey(Date.now());
     }
   }
 
@@ -2282,6 +2293,7 @@ export function App() {
             nowMs={streamNowMs}
             error={streamError}
             onClose={closeLiveStreamViewer}
+            onReconnectStream={reconnectLiveStreamImage}
           />
         ) : null}
       </MapPanel>
