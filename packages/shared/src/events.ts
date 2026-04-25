@@ -9,5 +9,6 @@ export const SOCKET_EVENTS = {
   scenarioPaused: "scenario.paused",
   scenarioResumed: "scenario.resumed",
   scenarioAdvanced: "scenario.advanced",
-  scenarioReset: "scenario.reset"
+  scenarioReset: "scenario.reset",
+  scenarioUpdated: "scenario.updated"
 } as const;

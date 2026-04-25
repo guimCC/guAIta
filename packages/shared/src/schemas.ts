@@ -107,6 +107,12 @@ export const ScenarioStateSchema = z.object({
   status: ScenarioStatusSchema,
   currentTimeMs: z.number().int().nonnegative(),
   durationMs: z.number().int().positive(),
+  speedMultiplier: z.number().positive(),
+  virtualStartIso: z.string().datetime(),
+  virtualEndIso: z.string().datetime(),
+  virtualNowIso: z.string().datetime(),
+  nextEventAtMs: z.number().int().nonnegative().nullable(),
+  firedEventCount: z.number().int().nonnegative(),
   startedAt: z.string().datetime().optional(),
   updatedAt: z.string().datetime()
 });

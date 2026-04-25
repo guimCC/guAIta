@@ -53,6 +53,7 @@ pause
 resume
 advance
 reset
+speed
 ```
 
 ## Virtual Time
@@ -60,6 +61,16 @@ reset
 Scenario events use virtual time. Live device events use real time.
 
 If the scenario is paused and the Arduino sends a detection, the detection should still be accepted and shown as a live device event.
+
+The current MVP scenario is a night-to-day patrol:
+
+```text
+virtual start: 04:30
+virtual end:   10:30
+default speed: 120x
+```
+
+The frontend exposes `1x`, `10x`, `60x`, `120x`, and `240x`, plus a `+15m` advance control. Scenario detections are ambient background activity; manual and device detections remain the intended escalation path for call-task behavior.
 
 ## Event Sources
 

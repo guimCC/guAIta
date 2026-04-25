@@ -67,7 +67,9 @@ button {
   flex-direction: column;
   gap: 18px;
   min-height: 0;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 18px;
   border-right: 1px solid rgba(120, 113, 108, 0.28);
 }
@@ -203,7 +205,101 @@ dt {
 
 .scenario-state strong {
   color: #fde68a;
-  font-size: 1.2rem;
+  font-size: 1.9rem;
+  line-height: 1;
+}
+
+.scenario-progress {
+  overflow: hidden;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(120, 113, 108, 0.28);
+}
+
+.scenario-progress span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #22c55e;
+}
+
+.scenario-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.scenario-meta span {
+  color: #d6d3d1;
+  font-size: 0.74rem;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.scenario-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.control-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 34px;
+  border: 1px solid rgba(120, 113, 108, 0.34);
+  border-radius: 8px;
+  padding: 0 9px;
+  background: rgba(41, 37, 36, 0.62);
+  color: #d6d3d1;
+  font-size: 0.76rem;
+  font-weight: 850;
+  cursor: pointer;
+}
+
+.control-button:hover:not(:disabled) {
+  border-color: rgba(34, 197, 94, 0.46);
+  color: #bbf7d0;
+}
+
+.control-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.46;
+}
+
+.speed-control {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  overflow: hidden;
+  border: 1px solid rgba(120, 113, 108, 0.32);
+  border-radius: 8px;
+}
+
+.speed-control button {
+  min-height: 30px;
+  border: 0;
+  border-right: 1px solid rgba(120, 113, 108, 0.24);
+  background: rgba(41, 37, 36, 0.5);
+  color: #a8a29e;
+  font-size: 0.72rem;
+  font-weight: 850;
+  cursor: pointer;
+}
+
+.speed-control button:last-child {
+  border-right: 0;
+}
+
+.speed-control button.selected {
+  color: #1c1917;
+  background: #22c55e;
+}
+
+.speed-control button:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
 }
 
 .primary-button {

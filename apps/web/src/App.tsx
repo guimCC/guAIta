@@ -4,9 +4,13 @@ import {
   ChevronDown,
   CheckCircle2,
   Clock3,
+  FastForward,
   MapPin,
+  Pause,
   PhoneCall,
+  Play,
   RadioTower,
+  RotateCcw,
   ShieldAlert,
   Trash2,
   Wifi,
@@ -18,6 +22,7 @@ import { io, type Socket } from "socket.io-client";
 import {
   SOCKET_EVENTS,
   type DetectionEvent,
+  type ScenarioState,
   type Station,
   type Zone
 } from "@guaita/shared";
@@ -38,6 +43,10 @@ interface EventsResponse {
   events: DetectionEvent[];
 }
 
+interface ScenarioResponse {
+  scenario: ScenarioState;
+}
+
 interface CreateEventResponse {
   ok: boolean;
   event?: DetectionEvent;
@@ -49,6 +58,13 @@ interface ClearEventsResponse {
   ok: boolean;
   deletedCount: number;
   error?: string;
+}
+
+interface ScenarioCommandResponse {
+  ok: boolean;
+  scenario?: ScenarioState;
+  error?: string;
+  message?: string;
 }
 
 interface AlertTrackingItem {
@@ -69,6 +85,8 @@ const emptyPolygonCollection: FeatureCollection<Polygon> = {
   type: "FeatureCollection",
   features: []
 };
+
+const scenarioSpeedOptions = [1, 10, 60, 120, 240] as const;
 
 function apiUrl(path: string): string {
   return `${apiBaseUrl.replace(/\/$/, "")}${path}`;
@@ -102,6 +120,23 @@ function percent(value: number): string {
 
 function stationLabel(stationId: string, stationById: Map<string, Station>): string {
   return stationById.get(stationId)?.name ?? stationId;
+}
+
+function formatScenarioClock(scenarioState: ScenarioState | null): string {
+  const value = scenarioState?.virtualNowIso ?? "2026-04-25T02:30:00.000Z";
+
+  return new Intl.DateTimeFormat(undefined, {
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(new Date(value));
+}
+
+function scenarioProgress(scenarioState: ScenarioState | null): number {
+  if (!scenarioState) {
+    return 0;
+  }
+
+  return Math.min(100, Math.max(0, (scenarioState.currentTimeMs / scenarioState.durationMs) * 100));
 }
 
 function buildAlertTrackingItems(
@@ -436,10 +471,12 @@ export function App() {
   const [stations, setStations] = useState<Station[]>([]);
   const [zones, setZones] = useState<Zone[]>([]);
   const [events, setEvents] = useState<DetectionEvent[]>([]);
+  const [scenarioState, setScenarioState] = useState<ScenarioState | null>(null);
   const [connectionState, setConnectionState] = useState<ConnectionState>("connecting");
   const [error, setError] = useState<string | null>(null);
   const [isPosting, setIsPosting] = useState(false);
   const [isClearingEvents, setIsClearingEvents] = useState(false);
+  const [isScenarioBusy, setIsScenarioBusy] = useState(false);
   const [expandedStationId, setExpandedStationId] = useState<string | null>(null);
   const stationListRef = useRef<HTMLDivElement | null>(null);
 
@@ -456,10 +493,11 @@ export function App() {
 
     async function loadInitialData() {
       try {
-        const [stationResponse, zoneResponse, eventResponse] = await Promise.all([
+        const [stationResponse, zoneResponse, eventResponse, scenarioResponse] = await Promise.all([
           fetchJson<StationsResponse>("/api/stations"),
           fetchJson<ZonesResponse>("/api/zones"),
-          fetchJson<EventsResponse>("/api/events?limit=50")
+          fetchJson<EventsResponse>("/api/events?limit=50"),
+          fetchJson<ScenarioResponse>("/api/scenario/state")
         ]);
 
         if (!isMounted) {
@@ -469,6 +507,7 @@ export function App() {
         setStations(stationResponse.stations);
         setZones(zoneResponse.zones);
         setEvents(eventResponse.events);
+        setScenarioState(scenarioResponse.scenario);
         setError(null);
       } catch (loadError) {
         if (isMounted) {
@@ -503,6 +542,9 @@ export function App() {
     });
     socket.on(SOCKET_EVENTS.eventsCleared, () => {
       setEvents([]);
+    });
+    socket.on(SOCKET_EVENTS.scenarioUpdated, (state: ScenarioState) => {
+      setScenarioState(state);
     });
 
     return () => {
@@ -575,6 +617,32 @@ export function App() {
     }
   }
 
+  async function runScenarioCommand(path: string, body?: Record<string, unknown>) {
+    setIsScenarioBusy(true);
+    setError(null);
+
+    try {
+      const response = await fetch(apiUrl(path), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: body ? JSON.stringify(body) : undefined
+      });
+      const responseBody = (await response.json()) as ScenarioCommandResponse;
+
+      if (!response.ok || !responseBody.ok || !responseBody.scenario) {
+        throw new Error(responseBody.message ?? responseBody.error ?? `${response.status} ${response.statusText}`);
+      }
+
+      setScenarioState(responseBody.scenario);
+    } catch (scenarioError) {
+      setError(scenarioError instanceof Error ? scenarioError.message : "Scenario command failed.");
+    } finally {
+      setIsScenarioBusy(false);
+    }
+  }
+
   async function clearEvents() {
     setIsClearingEvents(true);
     setError(null);
@@ -619,8 +687,70 @@ export function App() {
             <h2>Scenario</h2>
           </div>
           <div className="scenario-state">
-            <span>morning-frontier-breach</span>
-            <strong>standby</strong>
+            <span>night-to-day patrol</span>
+            <strong>{formatScenarioClock(scenarioState)}</strong>
+            <div className="scenario-progress" aria-hidden="true">
+              <span style={{ width: `${scenarioProgress(scenarioState)}%` }} />
+            </div>
+            <div className="scenario-meta">
+              <span>{scenarioState?.status ?? "idle"}</span>
+              <span>{scenarioState?.speedMultiplier ?? 120}x</span>
+            </div>
+          </div>
+          <div className="scenario-controls">
+            <button
+              className="control-button"
+              type="button"
+              onClick={() => runScenarioCommand("/api/scenario/start")}
+              disabled={isScenarioBusy || scenarioState?.status === "running"}
+              title="Start scenario clock"
+            >
+              <Play size={15} />
+              Start
+            </button>
+            <button
+              className="control-button"
+              type="button"
+              onClick={() => runScenarioCommand(scenarioState?.status === "paused" ? "/api/scenario/resume" : "/api/scenario/pause")}
+              disabled={isScenarioBusy || !scenarioState || scenarioState.status === "idle" || scenarioState.status === "completed"}
+              title={scenarioState?.status === "paused" ? "Resume scenario clock" : "Pause scenario clock"}
+            >
+              {scenarioState?.status === "paused" ? <Play size={15} /> : <Pause size={15} />}
+              {scenarioState?.status === "paused" ? "Resume" : "Pause"}
+            </button>
+            <button
+              className="control-button icon-only"
+              type="button"
+              onClick={() => runScenarioCommand("/api/scenario/advance", { minutes: 15 })}
+              disabled={isScenarioBusy || !scenarioState || scenarioState.status === "completed"}
+              title="Advance scenario by 15 minutes"
+            >
+              <FastForward size={15} />
+              +15m
+            </button>
+            <button
+              className="control-button icon-only"
+              type="button"
+              onClick={() => runScenarioCommand("/api/scenario/reset")}
+              disabled={isScenarioBusy}
+              title="Reset scenario clock"
+            >
+              <RotateCcw size={15} />
+              Reset
+            </button>
+          </div>
+          <div className="speed-control" aria-label="Scenario speed">
+            {scenarioSpeedOptions.map((speed) => (
+              <button
+                className={scenarioState?.speedMultiplier === speed ? "selected" : ""}
+                key={speed}
+                type="button"
+                onClick={() => runScenarioCommand("/api/scenario/speed", { speedMultiplier: speed })}
+                disabled={isScenarioBusy}
+              >
+                {speed}x
+              </button>
+            ))}
           </div>
           <button className="primary-button" type="button" onClick={simulateDetection} disabled={isPosting} title="Create manual detection">
             <RadioTower size={18} />
