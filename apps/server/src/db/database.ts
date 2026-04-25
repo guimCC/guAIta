@@ -22,6 +22,12 @@ interface JsonRow {
   payload: string;
 }
 
+export interface RuntimeResetResult {
+  eventsDeleted: number;
+  callsDeleted: number;
+  telemetryReadingsDeleted: number;
+}
+
 export class GuaitaDatabase {
   private readonly sqlite: Database;
 
@@ -140,6 +146,27 @@ export class GuaitaDatabase {
   clearCalls(): number {
     const result = this.sqlite.prepare("delete from calls").run();
     return result.changes;
+  }
+
+  clearTelemetryReadings(): number {
+    const result = this.sqlite.prepare("delete from telemetry_readings").run();
+    return result.changes;
+  }
+
+  resetRuntimeData(): RuntimeResetResult {
+    const reset = this.sqlite.transaction(() => {
+      const callsDeleted = this.sqlite.prepare("delete from calls").run().changes;
+      const eventsDeleted = this.sqlite.prepare("delete from events").run().changes;
+      const telemetryReadingsDeleted = this.sqlite.prepare("delete from telemetry_readings").run().changes;
+
+      return {
+        eventsDeleted,
+        callsDeleted,
+        telemetryReadingsDeleted
+      };
+    });
+
+    return reset();
   }
 
   insertCall(call: CivilProtectionCall): void {

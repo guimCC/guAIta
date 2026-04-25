@@ -34,9 +34,10 @@ Demo-safe close:
    - The event graph starts to move.
 
 4. Show a real edge event.
+   - Arm **Listen from device** in the dashboard when the presenter is ready for the live device moment.
    - Put a boar image/video in front of the live camera.
    - The device detects the boar locally.
-   - A live device event appears on the map, pauses the scenario clock, and starts the Civil Protection escalation flow.
+   - A live device event appears on the map, the backend auto-disarms device listening, pauses the scenario clock, and starts the Civil Protection escalation flow.
    - Additional device detections are ignored while that live escalation is still being handled, keeping the demo focused on one incident.
 
 5. Escalate operationally.

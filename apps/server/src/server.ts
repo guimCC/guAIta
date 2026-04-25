@@ -18,7 +18,7 @@ import {
   type TelemetryReadingInput
 } from "@guaita/shared";
 import { config } from "./config.js";
-import { GuaitaDatabase } from "./db/database.js";
+import { GuaitaDatabase, type RuntimeResetResult } from "./db/database.js";
 import {
   createCivilProtectionCallRecord,
   placeElevenLabsOutboundCall
@@ -34,6 +34,13 @@ function isDuplicateEventError(error: unknown): boolean {
 const ACTIVE_ESCALATION_CALL_STATUSES = new Set<CallStatus>(["requested", "calling", "completed"]);
 const REUSABLE_CALL_STATUSES = new Set<CallStatus>(["requested", "calling", "completed", "acknowledged"]);
 
+interface DeviceListenerState {
+  enabled: boolean;
+  updatedAt: string;
+  reason: string;
+  expiresAt?: string;
+}
+
 export async function buildServer() {
   const db = new GuaitaDatabase(config.databasePath);
   const app = Fastify({
@@ -44,9 +51,55 @@ export async function buildServer() {
   const io = new SocketServer(app.server, {
     cors: {
       origin: config.corsOrigin,
-      methods: ["GET", "POST", "DELETE"]
+      methods: ["GET", "POST", "PUT", "DELETE"]
     }
   });
+  let deviceListenerState = createDeviceListenerState(false, "server.start");
+  let deviceListenerTimer: ReturnType<typeof setTimeout> | undefined;
+
+  if (config.demoResetOnStart) {
+    const reset = db.resetRuntimeData();
+    app.log.info({ reset }, "reset demo runtime state on startup");
+  }
+
+  function setDeviceListenerEnabled(enabled: boolean, reason: string): DeviceListenerState {
+    if (deviceListenerTimer) {
+      clearTimeout(deviceListenerTimer);
+      deviceListenerTimer = undefined;
+    }
+
+    const expiresAt = enabled && config.deviceEventsArmTtlMs > 0
+      ? new Date(Date.now() + config.deviceEventsArmTtlMs).toISOString()
+      : undefined;
+    deviceListenerState = createDeviceListenerState(enabled, reason, expiresAt);
+
+    if (enabled && config.deviceEventsArmTtlMs > 0) {
+      deviceListenerTimer = setTimeout(() => {
+        setDeviceListenerEnabled(false, "device.listener.timeout");
+      }, config.deviceEventsArmTtlMs);
+    }
+
+    io.emit(SOCKET_EVENTS.deviceListenerUpdated, deviceListenerState);
+    return deviceListenerState;
+  }
+
+  function emitRuntimeReset(reset: RuntimeResetResult): void {
+    const clearedAt = new Date().toISOString();
+
+    io.emit(SOCKET_EVENTS.eventsCleared, {
+      deletedCount: reset.eventsDeleted,
+      clearedAt
+    });
+    io.emit(SOCKET_EVENTS.callsCleared, {
+      deletedCount: reset.callsDeleted,
+      clearedAt
+    });
+    io.emit(SOCKET_EVENTS.telemetryCleared, {
+      deletedCount: reset.telemetryReadingsDeleted,
+      clearedAt
+    });
+  }
+
   const scenarioEngine = new ScenarioEngine({
     onDetection: (input) => {
       try {
@@ -65,10 +118,15 @@ export async function buildServer() {
 
   await app.register(cors, {
     origin: config.corsOrigin,
-    methods: ["GET", "POST", "DELETE"]
+    methods: ["GET", "POST", "PUT", "DELETE"]
   });
 
+  setDeviceListenerEnabled(config.deviceEventsEnabledOnStart, "server.start");
+
   app.addHook("onClose", async () => {
+    if (deviceListenerTimer) {
+      clearTimeout(deviceListenerTimer);
+    }
     scenarioEngine.stop();
     io.close();
     db.close();
@@ -105,6 +163,40 @@ export async function buildServer() {
   app.get("/api/telemetry/latest", async () => ({
     telemetry: db.listLatestTelemetryReadings()
   }));
+
+  app.get("/api/device/listening", async () => ({
+    deviceListening: deviceListenerState
+  }));
+
+  app.put("/api/device/listening", async (request, reply) => {
+    const body = request.body as { enabled?: unknown } | undefined;
+
+    if (typeof body?.enabled !== "boolean") {
+      return reply.code(400).send({
+        ok: false,
+        error: "invalid_device_listener_state",
+        message: "Request body must include boolean field `enabled`."
+      });
+    }
+
+    return {
+      ok: true,
+      deviceListening: setDeviceListenerEnabled(body.enabled, body.enabled ? "dashboard.armed" : "dashboard.disarmed")
+    };
+  });
+
+  app.post("/api/demo/reset", async () => {
+    const reset = db.resetRuntimeData();
+    emitRuntimeReset(reset);
+    const scenario = scenarioEngine.reset();
+
+    return {
+      ok: true,
+      reset,
+      scenario,
+      deviceListening: setDeviceListenerEnabled(false, "demo.reset")
+    };
+  });
 
   app.delete("/api/events", async () => {
     const deletedCount = db.clearEvents();
@@ -345,7 +437,8 @@ export async function buildServer() {
 
   app.post("/api/scenario/reset", async () => ({
     ok: true,
-    scenario: scenarioEngine.reset()
+    scenario: scenarioEngine.reset(),
+    deviceListening: setDeviceListenerEnabled(false, "scenario.reset")
   }));
 
   app.post("/api/scenario/advance", async (request, reply) => {
@@ -394,6 +487,14 @@ export async function buildServer() {
       });
     }
 
+    if (!deviceListenerState.enabled) {
+      return reply.code(202).send({
+        ok: true,
+        ignored: true,
+        reason: "device_listener_disabled"
+      });
+    }
+
     if (hasActiveDeviceEscalation(db)) {
       if (scenarioEngine.getState().status === "running") {
         scenarioEngine.pause();
@@ -407,6 +508,7 @@ export async function buildServer() {
     }
 
     return createDetection(request, reply, "device", db, io, async (event) => {
+      setDeviceListenerEnabled(false, "device.event.accepted");
       pauseScenarioIfRunning(scenarioEngine);
       return startCivilProtectionCallForDetection(event, db, io);
     });
@@ -433,6 +535,15 @@ export async function buildServer() {
   });
 
   return { app, db, io };
+}
+
+function createDeviceListenerState(enabled: boolean, reason: string, expiresAt?: string): DeviceListenerState {
+  return {
+    enabled,
+    reason,
+    updatedAt: new Date().toISOString(),
+    ...(expiresAt ? { expiresAt } : {})
+  };
 }
 
 async function createTelemetryReading(

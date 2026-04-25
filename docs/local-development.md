@@ -38,6 +38,8 @@ This builds the shared package once, then starts:
 - backend on `http://localhost:3000`
 - frontend on `http://localhost:5173`
 
+In development, the backend clears stored runtime demo state on startup by default (`DEMO_RESET_ON_START=true`) and starts with device detections disarmed (`DEVICE_EVENTS_ENABLED_ON_START=false`). Arm **Listen from device** in the dashboard only when you are ready for the live Arduino detection; the backend auto-disarms after one accepted device event or after `DEVICE_EVENTS_ARM_TTL_MS`.
+
 Typecheck all packages:
 
 ```bash
@@ -48,6 +50,18 @@ Build all packages:
 
 ```bash
 npm run build
+```
+
+Reset a running demo without restarting the backend:
+
+```bash
+npm run reset-demo
+```
+
+If the backend is not on `http://localhost:3000`, pass the base URL:
+
+```bash
+npm run reset-demo -- http://localhost:3001
 ```
 
 ## Package-Specific Commands
@@ -140,6 +154,10 @@ With the backend running, test the device ingestion route locally:
 set -a
 source .env
 set +a
+
+curl -X PUT http://localhost:3000/api/device/listening \
+  -H "Content-Type: application/json" \
+  -d '{"enabled": true}'
 
 curl -X POST http://localhost:3000/api/device/events \
   -H "Authorization: Bearer $DEVICE_TOKEN" \

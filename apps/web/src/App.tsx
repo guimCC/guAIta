@@ -68,6 +68,20 @@ interface TelemetryResponse {
   telemetry: TelemetryReading[];
 }
 
+interface DeviceListeningState {
+  enabled: boolean;
+  updatedAt: string;
+  reason: string;
+  expiresAt?: string;
+}
+
+interface DeviceListeningResponse {
+  ok?: boolean;
+  deviceListening: DeviceListeningState;
+  error?: string;
+  message?: string;
+}
+
 interface CallsResponse {
   calls: CivilProtectionCall[];
 }
@@ -937,11 +951,12 @@ export function App() {
   const [isClearingEvents, setIsClearingEvents] = useState(false);
   const [isClearingAlerts, setIsClearingAlerts] = useState(false);
   const [isScenarioBusy, setIsScenarioBusy] = useState(false);
+  const [isSettingDeviceListening, setIsSettingDeviceListening] = useState(false);
   const [expandedStationId, setExpandedStationId] = useState<string | null>(null);
   const [dismissedAlertEventIds, setDismissedAlertEventIds] = useState<Set<string>>(() => new Set());
   const stationListRef = useRef<HTMLDivElement | null>(null);
-  const [listenFromDevice, setListenFromDevice] = useState(true);
-  const listenFromDeviceRef = useRef(true);
+  const [listenFromDevice, setListenFromDevice] = useState(false);
+  const listenFromDeviceRef = useRef(false);
   const ignoredDeviceEventIdsRef = useRef<Set<string>>(new Set());
 
   const stationById = useMemo(() => new Map(stations.map((station) => [station.id, station])), [stations]);
@@ -1000,7 +1015,7 @@ export function App() {
     Boolean(activeAlertEvent)
   );
 
-  function setDeviceListening(nextValue: boolean, options?: { clearIgnoredEvents?: boolean }) {
+  function applyDeviceListeningState(nextValue: boolean, options?: { clearIgnoredEvents?: boolean }) {
     listenFromDeviceRef.current = nextValue;
     setListenFromDevice(nextValue);
 
@@ -1009,16 +1024,56 @@ export function App() {
     }
   }
 
+  async function setDeviceListening(nextValue: boolean, options?: { clearIgnoredEvents?: boolean }) {
+    const previousValue = listenFromDeviceRef.current;
+    applyDeviceListeningState(nextValue, options);
+    setIsSettingDeviceListening(true);
+    setError(null);
+
+    try {
+      const response = await fetch(apiUrl("/api/device/listening"), {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          enabled: nextValue
+        })
+      });
+      const body = (await response.json()) as DeviceListeningResponse;
+
+      if (!response.ok || body.ok === false) {
+        throw new Error(body.message ?? body.error ?? `${response.status} ${response.statusText}`);
+      }
+
+      applyDeviceListeningState(body.deviceListening.enabled, options);
+    } catch (listenError) {
+      applyDeviceListeningState(previousValue);
+      setError(listenError instanceof Error ? listenError.message : "Could not update device listener.");
+    } finally {
+      setIsSettingDeviceListening(false);
+    }
+  }
+
   useEffect(() => {
     let isMounted = true;
 
     async function loadInitialData() {
       try {
-        const [stationResponse, zoneResponse, eventResponse, telemetryResponse, callResponse, scenarioResponse] = await Promise.all([
+        const [
+          stationResponse,
+          zoneResponse,
+          eventResponse,
+          telemetryResponse,
+          deviceListeningResponse,
+          callResponse,
+          scenarioResponse
+        ] = await Promise.all([
           fetchJson<StationsResponse>("/api/stations"),
           fetchJson<ZonesResponse>("/api/zones"),
           fetchJson<EventsResponse>("/api/events?limit=50"),
           fetchJson<TelemetryResponse>("/api/telemetry/latest"),
+          fetchJson<DeviceListeningResponse>("/api/device/listening"),
           fetchJson<CallsResponse>("/api/calls?limit=20"),
           fetchJson<ScenarioResponse>("/api/scenario/state")
         ]);
@@ -1031,6 +1086,7 @@ export function App() {
         setZones(zoneResponse.zones);
         setEvents(eventResponse.events);
         setTelemetryReadings(telemetryResponse.telemetry);
+        applyDeviceListeningState(deviceListeningResponse.deviceListening.enabled);
         setCalls(callResponse.calls);
         setScenarioState(scenarioResponse.scenario);
         setError(null);
@@ -1069,7 +1125,7 @@ export function App() {
           return;
         }
 
-        setDeviceListening(false);
+        applyDeviceListeningState(false);
       }
 
       setEvents((currentEvents) => upsertEvent(currentEvents, event));
@@ -1089,6 +1145,12 @@ export function App() {
       }
 
       setTelemetryReadings((currentReadings) => upsertTelemetry(currentReadings, reading));
+    });
+    socket.on(SOCKET_EVENTS.telemetryCleared, () => {
+      setTelemetryReadings([]);
+    });
+    socket.on(SOCKET_EVENTS.deviceListenerUpdated, (state: DeviceListeningState) => {
+      applyDeviceListeningState(state.enabled, { clearIgnoredEvents: state.enabled });
     });
     socket.on(SOCKET_EVENTS.eventsCleared, () => {
       setEvents([]);
@@ -1293,7 +1355,7 @@ export function App() {
       setScenarioState(responseBody.scenario);
 
       if (path === "/api/scenario/reset") {
-        setDeviceListening(true, { clearIgnoredEvents: true });
+        applyDeviceListeningState(false, { clearIgnoredEvents: true });
       }
     } catch (scenarioError) {
       setError(scenarioError instanceof Error ? scenarioError.message : "Scenario command failed.");
@@ -1383,8 +1445,9 @@ export function App() {
               <span>Listen from device</span>
               <input
                 checked={listenFromDevice}
+                disabled={isSettingDeviceListening}
                 type="checkbox"
-                onChange={(event) => setDeviceListening(event.target.checked, { clearIgnoredEvents: event.target.checked })}
+                onChange={(event) => void setDeviceListening(event.target.checked, { clearIgnoredEvents: event.target.checked })}
               />
               <i aria-hidden="true" />
             </label>
