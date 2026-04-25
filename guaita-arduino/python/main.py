@@ -19,6 +19,7 @@ HEADERS = {
 }
 
 # --- State ---
+active = False
 camera_is_working = False
 led_state = False
 last_metrics_post = 0
@@ -43,7 +44,7 @@ def _safe_float(value):
     except Exception:
         return None
 
-def post_detection(confidence: float, bounding_box_xyxy: tuple[int] = None):
+def post_detection(confidence: float, bounding_box_xyxy=None):
     try:
         r = requests.post(
             f"{SERVER_URL}/api/device/events",
@@ -87,37 +88,50 @@ def post_telemetry():
     except Exception as e:
         print(f"[telemetry] failed: {e}")
 
-
 def _bridge_get(key, call_name):
     try:
         latest_metrics[key] = Bridge.call(call_name)
     except Exception as e:
         print(f"[bridge] {call_name} failed: {e}")
 
-
 def loop():
-    global led_state, camera_is_working, last_metrics_post
+    global led_state, camera_is_working, last_metrics_post, active
 
-    led_state = not led_state
+    # Check button toggle state
     try:
-        Bridge.call("set_led_state", led_state)
+        active = bool(Bridge.call("get_active_state"))
     except Exception:
         pass
 
+    # LED blinks only when active
+    if active:
+        led_state = not led_state
+        try:
+            Bridge.call("set_led_state", led_state)
+        except Exception:
+            pass
+    else:
+        # LED off in standby
+        try:
+            Bridge.call("set_led_state", False)
+        except Exception:
+            pass
+
+    # Always read sensors so values are fresh when activated
     _bridge_get("temperatureC", "get_temperature")
     _bridge_get("humidityPct", "get_humidity")
     _bridge_get("lightLux", "get_light")
     _bridge_get("distanceMm", "get_distance")
 
-    print(f"[metrics] {latest_metrics}")
+    print(f"[state] active={active} metrics={latest_metrics}")
 
+    # Only post telemetry when active
     now = time.time()
-    if now - last_metrics_post >= METRICS_INTERVAL:
+    if active and now - last_metrics_post >= METRICS_INTERVAL:
         post_telemetry()
         last_metrics_post = now
 
     time.sleep(0.1 if camera_is_working else 1.0)
-
 
 def on_all_detections(detections: dict):
     global camera_is_working
@@ -131,7 +145,7 @@ def on_all_detections(detections: dict):
                 "timestamp": datetime.now(UTC).isoformat(),
             })
 
-        if key == "0":  # label "0" = wild_boar (as trained in the model)
+        if key == "0" and active:  # only fire when active
             best_confidence = values[0].get("confidence")
             bounding_box_xyxy = values[0].get("bounding_box_xyxy")
             ui.send_message("boar_detected", {
@@ -141,7 +155,6 @@ def on_all_detections(detections: dict):
                 **latest_metrics,
             })
             post_detection(best_confidence, bounding_box_xyxy)
-
 
 ui = WebUI()
 detector = VideoObjectDetection(confidence=0.5, debounce_sec=1.5)

@@ -7,6 +7,10 @@
 ModulinoThermo thermo;
 ModulinoLight light;
 ModulinoDistance distance;
+ModulinoButtons buttons;
+
+bool active = false;
+bool lastPressed = false;
 
 bool set_led_state(bool state) {
     digitalWrite(LED_BUILTIN, state ? LOW : HIGH);
@@ -33,6 +37,17 @@ float get_distance() {
     return (float)d;
 }
 
+// Called by Python every loop — handles toggle logic internally
+bool get_active_state() {
+    buttons.update();
+    bool pressed = buttons.isPressed(0);  // Button A
+    if (pressed && !lastPressed) {        // Rising edge only
+        active = !active;
+        buttons.setLeds(active, false, false);  // LED A mirrors active state
+    }
+    lastPressed = pressed;
+    return active;
+}
 
 void setup() {
     pinMode(LED_BUILTIN, OUTPUT);
@@ -40,12 +55,14 @@ void setup() {
     thermo.begin();
     light.begin();
     distance.begin();
+    buttons.begin();
     Bridge.begin();
     Bridge.provide("set_led_state", set_led_state);
     Bridge.provide("get_temperature", get_temperature);
     Bridge.provide("get_humidity", get_humidity);
     Bridge.provide("get_light", get_light);
     Bridge.provide("get_distance", get_distance);
+    Bridge.provide("get_active_state", get_active_state);
 }
 
 void loop() {
