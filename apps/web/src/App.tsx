@@ -622,13 +622,18 @@ export function App() {
     setError(null);
 
     try {
-      const response = await fetch(apiUrl(path), {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: body ? JSON.stringify(body) : undefined
-      });
+      const request: RequestInit = body
+        ? {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify(body)
+          }
+        : {
+            method: "POST"
+          };
+      const response = await fetch(apiUrl(path), request);
       const responseBody = (await response.json()) as ScenarioCommandResponse;
 
       if (!response.ok || !responseBody.ok || !responseBody.scenario) {
