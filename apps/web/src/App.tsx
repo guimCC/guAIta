@@ -169,6 +169,11 @@ interface DetectionNotice {
   receivedAtMs: number;
 }
 
+interface EscalationCallContext {
+  call: CivilProtectionCall;
+  event: DetectionEvent;
+}
+
 const emptyPointCollection: FeatureCollection<Point> = {
   type: "FeatureCollection",
   features: []
@@ -292,6 +297,19 @@ function formatBattery(value: number | undefined): string {
 
 function formatSignal(value: number | undefined): string {
   return value === undefined ? "n/a" : `${Math.round(value)} dBm`;
+}
+
+function timeMs(value: string | undefined): number {
+  const timestamp = value ? new Date(value).getTime() : Number.NaN;
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function eventTimeMs(event: DetectionEvent): number {
+  return timeMs(event.observedAt);
+}
+
+function callActivityTimeMs(call: CivilProtectionCall): number {
+  return timeMs(call.updatedAt);
 }
 
 function stationLabel(stationId: string, stationById: Map<string, Station>): string {
@@ -463,8 +481,48 @@ function callTone(call: CivilProtectionCall | undefined, isHighConfidence: boole
   return isHighConfidence ? "active" : "queued";
 }
 
+function actionRequiredStatus(call: CivilProtectionCall | undefined, isResolved: boolean): string {
+  if (isResolved) {
+    return "resolved";
+  }
+
+  switch (call?.status) {
+    case "requested":
+      return "call queued";
+    case "calling":
+      return "calling";
+    case "completed":
+      return "call completed";
+    case "failed":
+      return "call failed";
+    case "acknowledged":
+      return "resolved";
+    case undefined:
+      return "needs review";
+  }
+
+  return "needs review";
+}
+
 function latestCallForEvent(calls: CivilProtectionCall[], eventId: string | undefined): CivilProtectionCall | undefined {
   return eventId ? calls.find((call) => call.eventId === eventId) : undefined;
+}
+
+function latestEscalationCallContext(
+  calls: CivilProtectionCall[],
+  events: DetectionEvent[]
+): EscalationCallContext | undefined {
+  for (const call of calls) {
+    const event = events.find((candidate) => candidate.eventId === call.eventId);
+    if (event && isEscalationEvent(event)) {
+      return {
+        call,
+        event
+      };
+    }
+  }
+
+  return undefined;
 }
 
 function latestActionableEvent(
@@ -472,6 +530,7 @@ function latestActionableEvent(
   calls: CivilProtectionCall[],
   resolvedEventIds: Set<string>
 ): DetectionEvent | undefined {
+  const latestCallContext = latestEscalationCallContext(calls, events);
   const unresolvedEvent = events.find((event) => {
     if (!isEscalationEvent(event) || resolvedEventIds.has(event.eventId)) {
       return false;
@@ -481,10 +540,19 @@ function latestActionableEvent(
   });
 
   if (unresolvedEvent) {
-    return unresolvedEvent;
+    const unresolvedEventCall = latestCallForEvent(calls, unresolvedEvent.eventId);
+    if (
+      !latestCallContext ||
+      unresolvedEventCall ||
+      eventTimeMs(unresolvedEvent) > callActivityTimeMs(latestCallContext.call)
+    ) {
+      return unresolvedEvent;
+    }
+
+    return latestCallContext.event;
   }
 
-  return events.find((event) => {
+  return latestCallContext?.event ?? events.find((event) => {
     if (!isEscalationEvent(event)) {
       return false;
     }
@@ -702,7 +770,7 @@ function buildActionRequiredItems(
   }
 
   const stationName = stationLabel(latestEvent.stationId, stationById);
-  const status = isResolved ? "resolved" : latestCall ? "unresolved" : "needs review";
+  const status = actionRequiredStatus(latestCall, isResolved);
 
   return [
     {
