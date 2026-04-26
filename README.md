@@ -230,3 +230,5 @@ This is the core value proposition: lower-cost, more targeted, and more scalable
 	<img src="control_station.jpeg" alt="control_station" width="49%" />
 	<img src="oolang.png" alt="oolang" width="49%" />
 </p> 
+
+Video demo: https://drive.google.com/file/d/18hvrD2EFvNvVD42HcGpGbv3hK_QFQ4h6/view?usp=sharing
