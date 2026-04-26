@@ -1,4 +1,4 @@
-# guAIta — Edge AI Sensor Station
+# guAIta — Edge AI Control Station
 
 > On-device wild boar detection for the Collserola Natural Park, powered by Arduino UNO Q and Edge Impulse.
 
