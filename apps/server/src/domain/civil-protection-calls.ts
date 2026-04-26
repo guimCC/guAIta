@@ -73,13 +73,20 @@ export function createCivilProtectionCallRecord(
   };
 }
 
-export function buildIncidentDynamicVariables(call: CivilProtectionCall, event: DetectionEvent, station: Station) {
+export function buildIncidentDynamicVariables(
+  call: CivilProtectionCall,
+  event: DetectionEvent,
+  station: Station
+) {
   const source =
     event.source === "device"
       ? "Arduino UNO Q edge AI device"
       : event.source === "scenario"
         ? "scripted demo scenario"
         : "manual dashboard demo trigger";
+
+  const severity = event.confidence >= 0.9 ? "critical" : event.confidence >= 0.85 ? "high" : "medium";
+  const incidentAddress = "Avinguda de la Ciencia / Carrer Creu Casas (SENER)";
 
   return {
     call_id: call.id,
@@ -88,18 +95,20 @@ export function buildIncidentDynamicVariables(call: CivilProtectionCall, event: 
     event_id: event.eventId,
     station_id: station.id,
     station_name: station.name,
-    severity: event.confidence >= 0.9 ? "critical" : event.confidence >= 0.85 ? "high" : "medium",
+    severity,
     species: event.species.replace("_", " "),
     confidence: percent(event.confidence),
     source,
     direction: directionLabel(event.direction),
     observed_at: event.observedAt,
-    location_name: `${station.name}, Collserola`,
+    location_name: `${incidentAddress}, Collserola`,
+    address: incidentAddress,
+    nearest_reference: "SENER campus entrance near Avinguda de la Ciencia and Carrer Creu Casas",
     coordinates: stationCoordinates(station),
     current_pattern:
       event.confidence >= 0.85
-        ? "four detections in eleven minutes across nearby boundary stations in the demo scenario"
-        : "one detection above the monitoring threshold",
+        ? "one high-confidence wild boar detection near the SENER access area"
+        : "one wild boar detection near the SENER access area",
     normal_pattern: "the usual demo baseline is zero to one detection per hour at this boundary corridor",
     risk_reason: riskReason(event, station),
     recommended_action:
