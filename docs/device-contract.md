@@ -238,7 +238,7 @@ If `eventId` or `observedAt` are missing, the server may generate them.
 - `confidence`: value from `0` to `1`.
 - `count`: optional positive integer. Defaults to `1`.
 - `direction`: optional movement estimate such as `towards_city`, `towards_forest`, `left_to_right`, or `unknown`.
-- `snapshot`: optional JPEG or PNG snapshot encoded as base64 in the same JSON request. See [Device Image Snapshot Contract](device-image-snapshot-contract.md).
+- `snapshot`: optional JPEG or PNG snapshot encoded as base64 in the same JSON request. The Arduino demo sender annotates this image with bounding boxes when detections provide coordinates. See [Device Image Snapshot Contract](device-image-snapshot-contract.md).
 - `imageUrl`: server-generated URL returned when a snapshot is accepted. The device should not send this field.
 - live frames: separate from detection snapshots. Frames are uploaded only to `/api/device/stream-frames/pipe` or `/api/device/stream-frames/raw` while a dashboard stream session is active.
 - `temperatureC`: optional temperature reading.

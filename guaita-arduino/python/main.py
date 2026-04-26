@@ -14,9 +14,10 @@ from arduino.app_bricks.web_ui import WebUI
 from arduino.app_bricks.video_objectdetection import VideoObjectDetection
 
 try:
-    from PIL import Image
+    from PIL import Image, ImageDraw
 except Exception:
     Image = None
+    ImageDraw = None
 
 # --- Device contract config ---
 SERVER_URL = "https://uncordial-mathias-infirmly.ngrok-free.dev"
@@ -31,6 +32,9 @@ HEADERS = {
 # --- Detection thresholds ---
 CONFIDENCE_THR = 0.7
 THR_FRAMES = 20
+BOX_COLOR = (250, 204, 21)
+BOX_LABEL_COLOR = (12, 10, 9)
+BOX_THICKNESS = 3
 
 # --- Detection window state ---
 confidence_window = []
@@ -136,6 +140,9 @@ def _bytes_from_encoded_image(encoded_image):
         return None
 
 def encode_upload_image(frame: bytes):
+    if isinstance(frame, (bytes, bytearray)):
+        return jpeg_upload_image(bytes(frame))
+
     shape = getattr(frame, "shape", None)
     if shape is not None and len(shape) >= 2:
         stream_frame = frame
@@ -200,16 +207,44 @@ def extract_stream_boxes(detections: dict):
 
             source = value.get("bounding_box") or value.get("bbox") or value
             if not isinstance(source, dict):
-                xyxy = value.get("bounding_box_xyxy")
+                if isinstance(source, (list, tuple)) and len(source) >= 4:
+                    source = {
+                        "x": source[0],
+                        "y": source[1],
+                        "width": source[2],
+                        "height": source[3],
+                    }
+                else:
+                    xyxy = value.get("bounding_box_xyxy")
+                    if isinstance(xyxy, (list, tuple)) and len(xyxy) >= 4:
+                        source = {
+                            "x": xyxy[0],
+                            "y": xyxy[1],
+                            "x2": xyxy[2],
+                            "y2": xyxy[3],
+                        }
+                    else:
+                        continue
+
+            xyxy = value.get("bounding_box_xyxy")
+            if isinstance(xyxy, (list, tuple)) and len(xyxy) >= 4:
+                source = {
+                    **source,
+                    "x": xyxy[0],
+                    "y": xyxy[1],
+                    "x2": xyxy[2],
+                    "y2": xyxy[3],
+                }
+            else:
+                xyxy = value.get("bbox_xyxy")
                 if isinstance(xyxy, (list, tuple)) and len(xyxy) >= 4:
                     source = {
+                        **source,
                         "x": xyxy[0],
                         "y": xyxy[1],
                         "x2": xyxy[2],
                         "y2": xyxy[3],
                     }
-                else:
-                    continue
 
             x = _first_number(source, ["x", "left", "xmin", "x_min"])
             y = _first_number(source, ["y", "top", "ymin", "y_min"])
@@ -243,11 +278,141 @@ def extract_stream_boxes(detections: dict):
 
     return boxes
 
+def _box_to_pixel_rect(box: dict, width: int, height: int):
+    max_box_value = max(abs(box["x"]), abs(box["y"]), abs(box["width"]), abs(box["height"]))
+    is_normalized = max_box_value <= 1.5
+
+    x = box["x"] * width if is_normalized else box["x"]
+    y = box["y"] * height if is_normalized else box["y"]
+    box_width = box["width"] * width if is_normalized else box["width"]
+    box_height = box["height"] * height if is_normalized else box["height"]
+
+    x1 = max(0, min(width - 1, int(round(x))))
+    y1 = max(0, min(height - 1, int(round(y))))
+    x2 = max(0, min(width - 1, int(round(x + box_width))))
+    y2 = max(0, min(height - 1, int(round(y + box_height))))
+
+    if x2 <= x1 or y2 <= y1:
+        return None
+
+    return x1, y1, x2, y2
+
+def _box_label(box: dict):
+    confidence = box.get("confidence")
+    if confidence is not None:
+        return f"{int(round(confidence * 100))}%"
+
+    return box.get("label") or "boar"
+
+def _draw_boxes_on_array(frame, boxes):
+    shape = getattr(frame, "shape", None)
+    if shape is None or len(shape) < 2:
+        return None
+
+    height = int(shape[0])
+    width = int(shape[1])
+    if width <= 0 or height <= 0:
+        return None
+
+    copy_frame = getattr(frame, "copy", None)
+    annotated = copy_frame() if callable(copy_frame) else frame
+    thickness = max(1, min(BOX_THICKNESS, width, height))
+    channels = int(shape[2]) if len(shape) >= 3 else 1
+
+    if channels <= 1:
+        color = 255
+    else:
+        color_values = list(BOX_COLOR[: min(channels, 3)])
+        if channels > 3:
+            color_values.extend([255] * (channels - 3))
+        color = color_values
+
+    for box in boxes:
+        rect = _box_to_pixel_rect(box, width, height)
+        if rect is None:
+            continue
+
+        x1, y1, x2, y2 = rect
+        annotated[y1 : min(height, y1 + thickness), x1 : x2 + 1] = color
+        annotated[max(0, y2 - thickness + 1) : y2 + 1, x1 : x2 + 1] = color
+        annotated[y1 : y2 + 1, x1 : min(width, x1 + thickness)] = color
+        annotated[y1 : y2 + 1, max(0, x2 - thickness + 1) : x2 + 1] = color
+
+    return annotated
+
+def _draw_boxes_on_encoded_image(frame, boxes):
+    if Image is None or ImageDraw is None:
+        return None
+
+    image_bytes = bytes(frame) if isinstance(frame, (bytes, bytearray)) else get_image_bytes(frame)
+    if image_content_type(image_bytes) is None:
+        return None
+
+    with Image.open(BytesIO(image_bytes)) as source_image:
+        image = source_image.convert("RGB")
+
+    width, height = image.size
+    draw = ImageDraw.Draw(image)
+    for box in boxes:
+        rect = _box_to_pixel_rect(box, width, height)
+        if rect is None:
+            continue
+
+        draw.rectangle(rect, outline=BOX_COLOR, width=BOX_THICKNESS)
+        label = _box_label(box)
+        if label:
+            text_x, text_y = rect[0], max(0, rect[1] - 16)
+            try:
+                label_rect = draw.textbbox((text_x, text_y), label)
+                draw.rectangle(label_rect, fill=BOX_COLOR)
+            except Exception:
+                pass
+            draw.text((text_x + 2, text_y), label, fill=BOX_LABEL_COLOR)
+
+    image.thumbnail((STREAM_JPEG_MAX_WIDTH, STREAM_JPEG_MAX_WIDTH))
+    output = BytesIO()
+    image.save(output, format="JPEG", quality=STREAM_JPEG_QUALITY, optimize=False)
+    return output.getvalue()
+
+def draw_boxes_on_frame(frame, detections: dict):
+    boxes = extract_stream_boxes(detections)
+    if not boxes:
+        return frame, boxes
+
+    try:
+        annotated_array = _draw_boxes_on_array(frame, boxes)
+        if annotated_array is not None:
+            return annotated_array, boxes
+    except Exception as e:
+        print(f"[DETECTION] array bounding-box draw skipped: {e}")
+
+    try:
+        annotated_bytes = _draw_boxes_on_encoded_image(frame, boxes)
+        if annotated_bytes is not None:
+            return annotated_bytes, boxes
+    except Exception as e:
+        print(f"[DETECTION] encoded bounding-box draw skipped: {e}")
+
+    return frame, boxes
+
+def best_snapshot_detections(current_detections: dict = None):
+    current_boxes = extract_stream_boxes(current_detections)
+    if current_boxes:
+        return current_detections, current_boxes
+
+    last_boxes = extract_stream_boxes(last_detections)
+    if last_boxes:
+        return last_detections, last_boxes
+
+    return current_detections, current_boxes
+
 def post_detection(best_confidence: float, frame: bytes = None, detections: dict = None):
     snapshot = None
-    if frame is not None and detections is not None:
+    snapshot_detections, boxes = best_snapshot_detections(detections)
+    if frame is not None and snapshot_detections is not None:
         try:
-            image_bytes, content_type = encode_upload_image(frame)
+            annotated_frame, boxes = draw_boxes_on_frame(frame, snapshot_detections)
+            image_bytes, content_type = encode_upload_image(annotated_frame)
             if content_type is None:
                 raise ValueError("camera image bytes are not JPEG or PNG")
             
@@ -256,6 +421,10 @@ def post_detection(best_confidence: float, frame: bytes = None, detections: dict
                 "encoding": "base64",
                 "data": base64.b64encode(image_bytes).decode("utf-8"),
             }
+            if boxes:
+                print(f"[DETECTION] snapshot includes {len(boxes)} bounding boxes")
+            else:
+                print("[DETECTION] snapshot uploaded without boxes; model did not expose box coordinates for this frame")
         except Exception as e:
             print(f"[DETECTION] snapshot encoding failed: {e}")
     else:
@@ -541,6 +710,8 @@ def on_all_detections(detections: dict, frame: bytes):
 
     if frame is not None:
         last_frame = frame
+    if "0" in detections:
+        last_detections = detections
 
     for key, values in detections.items():
         for value in values:
@@ -572,11 +743,8 @@ def on_all_detections(detections: dict, frame: bytes):
                 "timestamp": datetime.now(UTC).isoformat(),
                 **latest_metrics,
             })
-            post_detection(avg, last_frame, last_detections)
+            post_detection(avg, frame if frame is not None else last_frame, detections)
             confidence_window.clear()
-
-    if "0" in detections:
-        last_detections = detections
 
 
 ui = WebUI()

@@ -4,7 +4,7 @@ Status: implemented for the demo path.
 
 ## Goal
 
-After a station detects a wild boar, the Arduino/UNO Q sender may include one still JPEG or PNG snapshot in the same detection JSON request. The dashboard then shows a camera icon on that detection; opening the icon loads the stored image in a new browser page.
+After a station detects a wild boar, the Arduino/UNO Q sender may include one still JPEG or PNG snapshot in the same detection JSON request. The demo sender draws the model's bounding boxes onto this snapshot before upload when detection coordinates are available. The dashboard then shows a camera icon on that detection; opening the icon loads the stored image in a new browser page.
 
 Image data is optional. A detection event remains valid when no snapshot is available.
 

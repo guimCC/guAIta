@@ -68,7 +68,7 @@ When the window confidence threshold is crossed, the device sends a **single POS
 - Station ID, timestamp, species, confidence score
 - Bounding box coordinates (optional)
 - Environmental telemetry at the moment of detection (temperature, humidity, light, distance)
-- An annotated JPEG snapshot (optional, toggled by the operator)
+- An annotated JPEG snapshot when model bounding boxes are available
 - Model metadata (name, version)
 
 The entire detection pipeline — inference, filtering, decision — runs locally.
@@ -99,13 +99,13 @@ The station is designed to be operated in the field without a laptop.
 | Button | Function | LED Feedback |
 |---|---|---|
 | **A** | Toggle station active / standby | LED A on = active, off = standby |
-| **B** | Toggle bounding box overlay on snapshots | LED B on = boxes enabled |
+| **B** | Toggle live-viewer bounding box overlay | LED B on = live boxes enabled |
 
 **Standby mode** (button A off): sensors are still read, but no detection events or telemetry are posted. The built-in LED stops blinking.
 
 **Active mode** (button A on): full pipeline runs — sliding window inference, telemetry POSTs every 30s, detection events on threshold crossing. The built-in LED blinks continuously.
 
-**Bounding box toggle** (button B): when enabled, the snapshot attached to each detection event has the model's bounding boxes drawn over the boar. When disabled, the raw frame is sent. Both modes still include the full detection metadata.
+**Bounding boxes**: detection snapshots always try to draw the model's bounding boxes when detections provide coordinates. Button B only controls the live-viewer overlay metadata, so the saved detection evidence does not depend on the physical toggle.
 
 ---
 
