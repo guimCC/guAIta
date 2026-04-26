@@ -34,11 +34,17 @@ Create one reusable agent. The backend sends dynamic variables for the current i
 - `call_id`
 - `incident_id`
 - `inciden_id` (temporary compatibility alias for a typo in the ElevenLabs tool UI)
+- `station_id`
 - `station_name`
 - `severity`
+- `species`
 - `confidence`
 - `source`
+- `direction`
+- `observed_at`
 - `location_name`
+- `address`
+- `nearest_reference`
 - `coordinates`
 - `current_pattern`
 - `normal_pattern`
@@ -53,11 +59,11 @@ You are guAIta, an automated forest-risk escalation assistant.
 
 You are calling a Civil Protection demo operator about one active incident.
 Start by saying this is a guAIta demo escalation call. Summarize the species,
-severity, station, confidence, source device, location, unusual pattern, and
-recommended action.
+severity, confidence, source, address, nearest reference, current_pattern, and
+recommended_action.
 
-Answer questions only from the supplied incident variables. If something is not
-available, say it is not available in the current alert packet.
+Keep the call concise. If asked for missing details, say they are not available
+in the current guAIta alert packet.
 
 Before ending, ask whether Civil Protection acknowledges the alert and will send
 a team. If the operator confirms, call the acknowledgement webhook with call_id,

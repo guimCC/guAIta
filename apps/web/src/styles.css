@@ -574,6 +574,15 @@ dt {
   backdrop-filter: blur(8px);
 }
 
+.hud-scenario {
+  border: 1px solid rgba(52, 211, 153, 0.34);
+  border-radius: 999px;
+  padding: 2px 7px;
+  color: #bbf7d0;
+  background: rgba(6, 78, 59, 0.34);
+  font-weight: 850;
+}
+
 .hud-title {
   color: #f5f5f4;
   font-weight: 850;
@@ -678,7 +687,8 @@ dt {
 
 .source-badge.scenario {
   color: #bbf7d0;
-  background: rgba(22, 101, 52, 0.28);
+  border-color: rgba(52, 211, 153, 0.4);
+  background: rgba(6, 78, 59, 0.36);
 }
 
 dl {
@@ -1468,7 +1478,8 @@ dd {
 }
 
 .timeline-item.scenario {
-  border-color: rgba(34, 197, 94, 0.25);
+  border-color: rgba(52, 211, 153, 0.42);
+  background: rgba(6, 78, 59, 0.28);
 }
 
 .timeline-dot {
@@ -1484,6 +1495,11 @@ dd {
 
 .timeline-item.manual .timeline-dot {
   background: #f59e0b;
+}
+
+.timeline-item.scenario .timeline-dot {
+  background: #34d399;
+  box-shadow: 0 0 0 4px rgba(52, 211, 153, 0.16);
 }
 
 .timeline-item span,
@@ -1507,6 +1523,15 @@ dd {
 .timeline-item b {
   color: #fde68a;
   font-size: 0.72rem;
+}
+
+.timeline-item.scenario em,
+.timeline-item.scenario b {
+  color: #bbf7d0;
+}
+
+.timeline-item.scenario em {
+  font-weight: 850;
 }
 
 .timeline-photo-link {

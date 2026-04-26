@@ -60,12 +60,12 @@ interface CallStage {
 
 const DEMO_DETECTION_STATION_ID = "collserola-control-02";
 const DETECTION_FLASH_TTL_MS = 6_500;
+const SCENARIO_DETECTION_FLASH_TTL_MS = 18_000;
 const DETECTION_FLASH_INTERVAL_MS = 80;
 const STREAM_KEEPALIVE_INTERVAL_MS = 15_000;
 const STREAM_STALE_AFTER_MS = 5_000;
 const DETECTION_NOTICE_TTL_MS = 18_000;
 const ACTIONABLE_CONFIDENCE_THRESHOLD = 0.85;
-const SCENARIO_WATCH_CONFIDENCE_THRESHOLD = 0.6;
 const LOW_LIGHT_LUX_THRESHOLD = 250;
 const HIGH_HUMIDITY_THRESHOLD = 80;
 const LOW_BATTERY_THRESHOLD = 30;
@@ -314,6 +314,24 @@ function callActivityTimeMs(call: CivilProtectionCall): number {
 
 function stationLabel(stationId: string, stationById: Map<string, Station>): string {
   return stationById.get(stationId)?.name ?? stationId;
+}
+
+function formatDirectionLabel(value: DetectionEvent["direction"] | undefined): string {
+  switch (value) {
+    case "towards_city":
+      return "towards city";
+    case "towards_forest":
+      return "towards forest";
+    case "left_to_right":
+      return "left to right";
+    case "right_to_left":
+      return "right to left";
+    case "unknown":
+    case undefined:
+      return "unknown";
+    default:
+      return "unknown";
+  }
 }
 
 function callStatusLabel(call: CivilProtectionCall | undefined): string {
@@ -603,6 +621,10 @@ function isEscalationEvent(event: DetectionEvent): boolean {
   return event.source === "device" || event.source === "manual";
 }
 
+function eventFlashTtlMs(event: DetectionEvent): number {
+  return event.source === "scenario" ? SCENARIO_DETECTION_FLASH_TTL_MS : DETECTION_FLASH_TTL_MS;
+}
+
 function isUnresolvedCall(call: CivilProtectionCall): boolean {
   return call.status !== "acknowledged";
 }
@@ -667,6 +689,182 @@ function scenarioProgress(scenarioState: ScenarioState | null): number {
   return Math.min(100, Math.max(0, (scenarioState.currentTimeMs / scenarioState.durationMs) * 100));
 }
 
+function virtualBarcelonaHour(value: string): number {
+  return (new Date(value).getUTCHours() + 2) % 24;
+}
+
+function isDaylightScenarioDetection(event: DetectionEvent): boolean {
+  const hour = virtualBarcelonaHour(event.observedAt);
+  return hour >= 7 && hour <= 18;
+}
+
+function isCrepuscularScenarioDetection(event: DetectionEvent): boolean {
+  const hour = virtualBarcelonaHour(event.observedAt);
+  return hour >= 6 && hour < 8;
+}
+
+function buildDiseaseBehaviorAlert(
+  event: DetectionEvent,
+  stationName: string,
+  observedAt: string
+): LightAlertItem {
+  const temperature = formatTemperature(event.temperatureC);
+  const humidity = formatHumidity(event.humidityPct);
+  const light = formatLight(event.lightLux);
+  const locationTime = `${stationName} at ${observedAt}`;
+
+  if ((event.humidityPct ?? 0) >= 91) {
+    return {
+      id: `${event.eventId}-fever-risk`,
+      title: "Fever-risk cue",
+      value: `${temperature} / ${humidity}`,
+      detail: `${locationTime}: unusually humid refuge`,
+      tone: "warning"
+    };
+  }
+
+  if ((event.temperatureC ?? 99) <= 11) {
+    return {
+      id: `${event.eventId}-cool-shelter`,
+      title: "Cool shelter signal",
+      value: `${temperature}, ${light}`,
+      detail: `${locationTime}: shaded low-temp cover`,
+      tone: "warning"
+    };
+  }
+
+  if ((event.lightLux ?? 999) <= 5) {
+    return {
+      id: `${event.eventId}-shade-seeking`,
+      title: "Shade-seeking pattern",
+      value: `${light}, ${humidity}`,
+      detail: `${locationTime}: dark humid refuge`,
+      tone: "warning"
+    };
+  }
+
+  return {
+    id: `${event.eventId}-humid-refuge`,
+    title: "Humid refuge behavior",
+    value: `${humidity}, ${temperature}`,
+    detail: `${locationTime}: cool humid cover`,
+    tone: "warning"
+  };
+}
+
+function buildScenarioLightAlerts(
+  event: DetectionEvent,
+  stationName: string,
+  observedAt: string
+): LightAlertItem[] {
+  const items: LightAlertItem[] = [];
+  const isCoolHumidShaded =
+    event.confidence >= 0.6 &&
+    event.temperatureC !== undefined &&
+    event.temperatureC <= 11.6 &&
+    event.humidityPct !== undefined &&
+    event.humidityPct >= 86 &&
+    event.lightLux !== undefined &&
+    event.lightLux <= 12;
+
+  if (isCoolHumidShaded) {
+    items.push(buildDiseaseBehaviorAlert(event, stationName, observedAt));
+  }
+
+  if (
+    isCrepuscularScenarioDetection(event) &&
+    event.confidence >= 0.62 &&
+    event.lightLux !== undefined &&
+    event.lightLux >= 80 &&
+    event.lightLux <= 220
+  ) {
+    items.push({
+      id: `${event.eventId}-crepuscular-activity`,
+      title: "Crepuscular activity",
+      value: formatLight(event.lightLux),
+      detail: `${stationName}: dawn movement`,
+      tone: "info"
+    });
+  }
+
+  if (isDaylightScenarioDetection(event) && event.lightLux !== undefined && event.lightLux < 80) {
+    items.push({
+      id: `${event.eventId}-blocked-light`,
+      title: "Light sensor anomaly",
+      value: formatLight(event.lightLux),
+      detail: `${stationName}: check obstruction`,
+      tone: "watch"
+    });
+  }
+
+  if (
+    isDaylightScenarioDetection(event) &&
+    event.count === 1 &&
+    event.confidence >= 0.6 &&
+    event.lightLux !== undefined &&
+    event.lightLux >= 350 &&
+    event.direction === "unknown"
+  ) {
+    items.push({
+      id: `${event.eventId}-day-wandering`,
+      title: "Daylight wandering",
+      value: "solo",
+      detail: `${stationName} at ${observedAt}`,
+      tone: "watch"
+    });
+  }
+
+  if (event.temperatureC !== undefined && event.temperatureC >= 22) {
+    items.push({
+      id: `${event.eventId}-temperature-anomaly`,
+      title: "Temp anomaly",
+      value: formatTemperature(event.temperatureC),
+      detail: `${stationName}: sensor trend check`,
+      tone: "warning"
+    });
+  }
+
+  if (event.batteryPct !== undefined && event.batteryPct <= LOW_BATTERY_THRESHOLD) {
+    items.push({
+      id: `${event.eventId}-battery-low`,
+      title: "Low battery",
+      value: formatBattery(event.batteryPct),
+      detail: `${stationName} sensor node`,
+      tone: "warning"
+    });
+  }
+
+  return items;
+}
+
+function diversifyLightAlerts(items: LightAlertItem[]): LightAlertItem[] {
+  const buckets = new Map<string, LightAlertItem[]>();
+
+  for (const item of items) {
+    const bucket = buckets.get(item.title) ?? [];
+    bucket.push(item);
+    buckets.set(item.title, bucket);
+  }
+
+  const result: LightAlertItem[] = [];
+  const bucketList = [...buckets.values()];
+  let didAddItem = true;
+
+  while (didAddItem) {
+    didAddItem = false;
+
+    for (const bucket of bucketList) {
+      const item = bucket.shift();
+      if (item) {
+        result.push(item);
+        didAddItem = true;
+      }
+    }
+  }
+
+  return result;
+}
+
 function shouldRenderPublicStatusPage(): boolean {
   if (typeof window === "undefined") {
     return false;
@@ -690,19 +888,15 @@ function snapshotEventIdFromLocation(): string | null {
 
 function buildLightAlerts(events: DetectionEvent[], stationById: Map<string, Station>): LightAlertItem[] {
   const items: LightAlertItem[] = [];
+  const scenarioItems: LightAlertItem[] = [];
 
   for (const event of events) {
     const stationName = stationLabel(event.stationId, stationById);
     const observedAt = formatTime(event.observedAt);
 
-    if (event.source === "scenario" && event.confidence >= SCENARIO_WATCH_CONFIDENCE_THRESHOLD) {
-      items.push({
-        id: `${event.eventId}-scenario-watch`,
-        title: "Scenario watch",
-        value: percent(event.confidence),
-        detail: `${stationName} at ${observedAt}`,
-        tone: "info"
-      });
+    if (event.source === "scenario") {
+      scenarioItems.push(...buildScenarioLightAlerts(event, stationName, observedAt));
+      continue;
     }
 
     if (event.confidence < ACTIONABLE_CONFIDENCE_THRESHOLD) {
@@ -756,7 +950,7 @@ function buildLightAlerts(events: DetectionEvent[], stationById: Map<string, Sta
     }
   }
 
-  return items;
+  return [...diversifyLightAlerts(scenarioItems), ...items];
 }
 
 function buildActionRequiredItems(
@@ -840,15 +1034,21 @@ function buildEventFeatures(
     const event = flash.event;
     const station = stationById.get(event.stationId);
     const ageMs = nowMs - flash.receivedAtMs;
+    const ttlMs = eventFlashTtlMs(event);
 
-    if (!station || ageMs < 0 || ageMs > DETECTION_FLASH_TTL_MS) {
+    if (!station || ageMs < 0 || ageMs > ttlMs) {
       continue;
     }
 
-    const progress = Math.min(1, ageMs / DETECTION_FLASH_TTL_MS);
+    const progress = Math.min(1, ageMs / ttlMs);
     const decay = Math.max(0, 1 - progress);
-    const sourceWeight = event.source === "scenario" ? 0.72 : 1;
     const confidenceWeight = 0.75 + event.confidence * 0.25;
+    const isScenarioEvent = event.source === "scenario";
+    const ringSpread = isScenarioEvent ? 54 : 38;
+    const coreFade = event.source === "scenario" ? 1.4 : 2;
+    const ringOpacityBase = isScenarioEvent ? 0.62 : 0.4;
+    const strokeOpacityBase = isScenarioEvent ? 0.82 : 0.55;
+    const coreOpacityBase = isScenarioEvent ? 1 : 0.95;
 
     features.push({
       type: "Feature",
@@ -862,11 +1062,12 @@ function buildEventFeatures(
         source: event.source,
         confidence: event.confidence,
         observedAt: event.observedAt,
-        ringRadius: 11 + progress * 38 * confidenceWeight,
-        ringOpacity: 0.4 * sourceWeight * Math.pow(decay, 1.45),
-        strokeOpacity: 0.55 * sourceWeight * Math.pow(decay, 1.1),
-        coreRadius: 7 - progress * 2,
-        coreOpacity: 0.95 * sourceWeight * Math.pow(decay, 0.82)
+        ringRadius: 11 + progress * ringSpread * confidenceWeight,
+        ringOpacity: ringOpacityBase * Math.pow(decay, isScenarioEvent ? 1.05 : 1.45),
+        strokeOpacity: strokeOpacityBase * Math.pow(decay, isScenarioEvent ? 0.9 : 1.1),
+        coreRadius: 7 - progress * coreFade,
+        coreOpacity: coreOpacityBase * Math.pow(decay, isScenarioEvent ? 0.62 : 0.82),
+        labelOpacity: isScenarioEvent ? 0.95 * Math.pow(decay, 0.45) : 0
       }
     });
   }
@@ -1118,7 +1319,7 @@ function MapPanel({
             "#ef4444",
             "manual",
             "#f59e0b",
-            "#22c55e"
+            "#34d399"
           ],
           "circle-radius": ["get", "ringRadius"],
           "circle-opacity": ["get", "ringOpacity"],
@@ -1130,10 +1331,15 @@ function MapPanel({
             "#7f1d1d",
             "manual",
             "#92400e",
-            "#14532d"
+            "#047857"
           ],
           "circle-stroke-opacity": ["get", "strokeOpacity"],
-          "circle-stroke-width": 1.2
+          "circle-stroke-width": [
+            "case",
+            ["==", ["get", "source"], "scenario"],
+            2,
+            1.2
+          ]
         }
       });
       map.addLayer({
@@ -1148,13 +1354,33 @@ function MapPanel({
             "#fecaca",
             "manual",
             "#fef3c7",
-            "#bbf7d0"
+            "#d9f99d"
           ],
           "circle-radius": ["get", "coreRadius"],
           "circle-opacity": ["get", "coreOpacity"],
           "circle-stroke-color": "#1c1917",
           "circle-stroke-opacity": ["get", "coreOpacity"],
           "circle-stroke-width": 2
+        }
+      });
+      map.addLayer({
+        id: "event-sim-labels",
+        type: "symbol",
+        source: "events",
+        filter: ["==", ["get", "source"], "scenario"],
+        layout: {
+          "text-field": "SIM",
+          "text-size": 10,
+          "text-offset": [0, -1.7],
+          "text-anchor": "bottom",
+          "text-allow-overlap": true,
+          "text-ignore-placement": true
+        },
+        paint: {
+          "text-color": "#ecfccb",
+          "text-halo-color": "#052e16",
+          "text-halo-width": 1.4,
+          "text-opacity": ["get", "labelOpacity"]
         }
       });
       setMapReady(true);
@@ -1215,7 +1441,7 @@ function MapPanel({
     const renderFlashes = () => {
       const nowMs = performance.now();
       for (const [eventId, flash] of flashesRef.current) {
-        if (nowMs - flash.receivedAtMs > DETECTION_FLASH_TTL_MS) {
+        if (nowMs - flash.receivedAtMs > eventFlashTtlMs(flash.event)) {
           flashesRef.current.delete(eventId);
         }
       }
@@ -1228,6 +1454,8 @@ function MapPanel({
     return () => window.clearInterval(interval);
   }, [mapReady, stationById]);
 
+  const scenarioEventCount = events.filter((event) => event.source === "scenario").length;
+
   return (
     <section className="map-panel" aria-label="Collserola operational map">
       <div ref={containerRef} className="map-container" />
@@ -1235,6 +1463,7 @@ function MapPanel({
         <span className="hud-title">Collserola</span>
         <span>{stations.length} stations</span>
         <span>{events.length} detections</span>
+        <span className="hud-scenario">{scenarioEventCount} sim</span>
       </div>
       {mapError ? <div className="map-error">{mapError}</div> : null}
       {children}
@@ -2148,7 +2377,6 @@ export function App() {
             </label>
           </div>
           <div className="scenario-state">
-            <span>night-to-day patrol</span>
             <strong>{formatScenarioClock(scenarioState)}</strong>
             <div className="scenario-progress" aria-hidden="true">
               <span style={{ width: `${scenarioProgress(scenarioState)}%` }} />
@@ -2400,7 +2628,7 @@ export function App() {
                   </div>
                   <div>
                     <dt>Direction</dt>
-                    <dd>{latestEvent.direction ?? "unknown"}</dd>
+                    <dd>{formatDirectionLabel(latestEvent.direction)}</dd>
                   </div>
                   <div>
                     <dt>Temp</dt>
@@ -2580,7 +2808,7 @@ export function App() {
               <span className="timeline-dot" />
               <span>{formatTime(event.observedAt)}</span>
               <strong>{stationLabel(event.stationId, stationById)}</strong>
-              <em>{event.source}</em>
+              <em>{event.source === "scenario" ? "sim" : event.source}</em>
               {eventPhotoUrl(event) ? (
                 <button
                   className="timeline-photo-link"
