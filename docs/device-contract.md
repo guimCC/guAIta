@@ -177,17 +177,8 @@ Legacy JSON payload:
   "contentType": "image/png",
   "encoding": "base64",
   "data": "iVBORw0KGgoAAAANSUhEUgAA...",
-  "boundingBoxesEnabled": true,
-  "boxes": [
-    {
-      "label": "0",
-      "confidence": 0.91,
-      "x": 212,
-      "y": 96,
-      "width": 118,
-      "height": 84
-    }
-  ]
+  "boundingBoxesEnabled": false,
+  "boxes": []
 }
 ```
 

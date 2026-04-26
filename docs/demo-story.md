@@ -37,8 +37,9 @@ Demo-safe close:
    - Arm **Listen from device** in the dashboard when the presenter is ready for the live device moment.
    - Press the camera icon on Control Station 02 to open the compact live viewer.
    - The viewer shows low-rate frames from the UNO Q through the server; this is operational evidence, not cloud inference.
+   - Press Button B on the Arduino to toggle bounding boxes in the live viewer when useful.
    - Put a boar image/video in front of the live camera.
-   - The live viewer and detection snapshot show bounding boxes automatically.
+   - The detection snapshot is annotated with bounding boxes automatically when the model provides coordinates.
    - The device detects the boar locally.
    - A live device event appears on the map, a compact detection popup offers **Watch live** and **View image**, the backend auto-disarms device listening, and pauses the scenario clock.
    - Additional device detections are ignored while the listener is disarmed, keeping the demo focused on one incident.

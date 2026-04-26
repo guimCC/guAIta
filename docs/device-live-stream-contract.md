@@ -73,14 +73,14 @@ Part headers:
 Content-Type: image/jpeg
 Content-Length: 48321
 X-Guaita-Captured-At: 2026-04-26T08:10:01.000Z
-X-Guaita-Bounding-Boxes-Enabled: true
+X-Guaita-Bounding-Boxes-Enabled: false
 X-Guaita-Frame-Width: 640
 X-Guaita-Frame-Height: 360
 
 <raw image bytes>
 ```
 
-Optional header when the model reports boxes:
+Optional header when Button B is enabled:
 
 ```text
 X-Guaita-Boxes: [{"label":"0","confidence":0.91,"x":212,"y":96,"width":118,"height":84}]
@@ -89,7 +89,7 @@ X-Guaita-Boxes: [{"label":"0","confidence":0.91,"x":212,"y":96,"width":118,"heig
 The single-frame raw endpoint remains accepted as a fallback:
 
 ```text
-POST /api/device/stream-frames/raw?stationId={STATION_ID}&capturedAt={ISO_TIME}&boundingBoxesEnabled=true
+POST /api/device/stream-frames/raw?stationId={STATION_ID}&capturedAt={ISO_TIME}&boundingBoxesEnabled=false
 Authorization: Bearer {DEVICE_TOKEN}
 Content-Type: image/jpeg or image/png
 ```
@@ -132,7 +132,7 @@ session TTL: 60 seconds, refreshed by dashboard keepalive
 storage: in memory only
 ```
 
-The Python app always sends `boundingBoxesEnabled=true` and includes bounding-box metadata with each image part when detections provide coordinates. The dashboard draws the visual boxes as a lightweight overlay. The server does not run inference or draw boxes.
+If Button B is enabled on the Arduino, the Python app sends bounding-box metadata with each image part. The dashboard draws the visual boxes as a lightweight overlay. The server does not run inference or draw boxes.
 
 ## Realtime Events
 

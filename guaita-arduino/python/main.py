@@ -32,7 +32,6 @@ HEADERS = {
 # --- Detection thresholds ---
 CONFIDENCE_THR = 0.7
 THR_FRAMES = 20
-BOUNDING_BOXES_ENABLED = True
 BOX_COLOR = (250, 204, 21)
 BOX_LABEL_COLOR = (12, 10, 9)
 BOX_THICKNESS = 3
@@ -48,7 +47,7 @@ last_stream_wait_print = 0
 
 # --- State ---
 active = False
-show_bounding_boxes = BOUNDING_BOXES_ENABLED
+show_bounding_boxes = False  # toggled by button B, default off
 camera_is_working = False
 led_state = False
 last_metrics_post = 0
@@ -71,6 +70,7 @@ stream_lock = threading.Lock()
 latest_stream_frame = None
 latest_stream_detections = None
 latest_stream_captured_at = None
+latest_stream_bbox_state = False
 latest_stream_sequence = 0
 posted_stream_sequence = 0
 
@@ -207,16 +207,44 @@ def extract_stream_boxes(detections: dict):
 
             source = value.get("bounding_box") or value.get("bbox") or value
             if not isinstance(source, dict):
-                xyxy = value.get("bounding_box_xyxy")
+                if isinstance(source, (list, tuple)) and len(source) >= 4:
+                    source = {
+                        "x": source[0],
+                        "y": source[1],
+                        "width": source[2],
+                        "height": source[3],
+                    }
+                else:
+                    xyxy = value.get("bounding_box_xyxy")
+                    if isinstance(xyxy, (list, tuple)) and len(xyxy) >= 4:
+                        source = {
+                            "x": xyxy[0],
+                            "y": xyxy[1],
+                            "x2": xyxy[2],
+                            "y2": xyxy[3],
+                        }
+                    else:
+                        continue
+
+            xyxy = value.get("bounding_box_xyxy")
+            if isinstance(xyxy, (list, tuple)) and len(xyxy) >= 4:
+                source = {
+                    **source,
+                    "x": xyxy[0],
+                    "y": xyxy[1],
+                    "x2": xyxy[2],
+                    "y2": xyxy[3],
+                }
+            else:
+                xyxy = value.get("bbox_xyxy")
                 if isinstance(xyxy, (list, tuple)) and len(xyxy) >= 4:
                     source = {
+                        **source,
                         "x": xyxy[0],
                         "y": xyxy[1],
                         "x2": xyxy[2],
                         "y2": xyxy[3],
                     }
-                else:
-                    continue
 
             x = _first_number(source, ["x", "left", "xmin", "x_min"])
             y = _first_number(source, ["y", "top", "ymin", "y_min"])
@@ -367,11 +395,23 @@ def draw_boxes_on_frame(frame, detections: dict):
 
     return frame, boxes
 
+def best_snapshot_detections(current_detections: dict = None):
+    current_boxes = extract_stream_boxes(current_detections)
+    if current_boxes:
+        return current_detections, current_boxes
+
+    last_boxes = extract_stream_boxes(last_detections)
+    if last_boxes:
+        return last_detections, last_boxes
+
+    return current_detections, current_boxes
+
 def post_detection(best_confidence: float, frame: bytes = None, detections: dict = None):
     snapshot = None
-    if frame is not None and detections is not None:
+    snapshot_detections, boxes = best_snapshot_detections(detections)
+    if frame is not None and snapshot_detections is not None:
         try:
-            annotated_frame, boxes = draw_boxes_on_frame(frame, detections)
+            annotated_frame, boxes = draw_boxes_on_frame(frame, snapshot_detections)
             image_bytes, content_type = encode_upload_image(annotated_frame)
             if content_type is None:
                 raise ValueError("camera image bytes are not JPEG or PNG")
@@ -381,7 +421,10 @@ def post_detection(best_confidence: float, frame: bytes = None, detections: dict
                 "encoding": "base64",
                 "data": base64.b64encode(image_bytes).decode("utf-8"),
             }
-            print(f"[DETECTION] snapshot includes {len(boxes)} bounding boxes")
+            if boxes:
+                print(f"[DETECTION] snapshot includes {len(boxes)} bounding boxes")
+            else:
+                print("[DETECTION] snapshot uploaded without boxes; model did not expose box coordinates for this frame")
         except Exception as e:
             print(f"[DETECTION] snapshot encoding failed: {e}")
     else:
@@ -457,7 +500,7 @@ def poll_stream_state(session=None):
 
 def maybe_post_stream_frame(frame: bytes, detections: dict = None):
     global latest_stream_frame, latest_stream_detections, latest_stream_captured_at
-    global latest_stream_sequence
+    global latest_stream_bbox_state, latest_stream_sequence
 
     if not stream_active or frame is None:
         return
@@ -466,6 +509,7 @@ def maybe_post_stream_frame(frame: bytes, detections: dict = None):
         latest_stream_frame = frame
         latest_stream_detections = detections
         latest_stream_captured_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        latest_stream_bbox_state = show_bounding_boxes
         latest_stream_sequence += 1
 
 def attach_camera_stream_tap(detection_stream):
@@ -500,12 +544,14 @@ def build_stream_frame_part():
         frame = latest_stream_frame
         detections = latest_stream_detections
         captured_at = latest_stream_captured_at
+        bbox_state = latest_stream_bbox_state
         sequence = latest_stream_sequence
 
     if frame is None and last_frame is not None:
         frame = last_frame
         detections = last_detections
         captured_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        bbox_state = show_bounding_boxes
         sequence = -1
 
     if frame is None:
@@ -524,13 +570,13 @@ def build_stream_frame_part():
             return None
 
         frame_width, frame_height = frame_dimensions(frame)
-        boxes = extract_stream_boxes(detections)
+        boxes = extract_stream_boxes(detections) if bbox_state else []
         headers = [
             f"--{STREAM_UPLOAD_BOUNDARY}",
             f"Content-Type: {content_type}",
             f"Content-Length: {len(image_bytes)}",
             f"X-Guaita-Captured-At: {captured_at or datetime.now(UTC).strftime('%Y-%m-%dT%H:%M:%S.000Z')}",
-            "X-Guaita-Bounding-Boxes-Enabled: true",
+            f"X-Guaita-Bounding-Boxes-Enabled: {'true' if bbox_state else 'false'}",
         ]
         if frame_width is not None and frame_height is not None:
             headers.append(f"X-Guaita-Frame-Width: {frame_width}")
@@ -626,9 +672,9 @@ def loop():
 
     try:
         active = bool(Bridge.call("get_active_state"))
+        show_bounding_boxes = bool(Bridge.call("get_bbox_state"))
     except Exception:
         pass
-    show_bounding_boxes = BOUNDING_BOXES_ENABLED
 
     if active:
         led_state = not led_state
@@ -664,6 +710,8 @@ def on_all_detections(detections: dict, frame: bytes):
 
     if frame is not None:
         last_frame = frame
+    if "0" in detections:
+        last_detections = detections
 
     for key, values in detections.items():
         for value in values:
@@ -697,9 +745,6 @@ def on_all_detections(detections: dict, frame: bytes):
             })
             post_detection(avg, frame if frame is not None else last_frame, detections)
             confidence_window.clear()
-
-    if "0" in detections:
-        last_detections = detections
 
 
 ui = WebUI()
