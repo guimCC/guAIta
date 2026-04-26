@@ -6,7 +6,7 @@
 
 ## What This Is
 
-This is the edge layer of the guAIta system. Each station is a low-cost, self-contained device that runs a computer vision model locally, reads environmental sensors, and sends compact event metadata to the central server — no required video streaming, no cloud inference.
+This is the edge layer of the guAIta system. Each station is a low-cost, self-contained device that runs a computer vision model locally, reads environmental sensors, and sends compact event metadata to the central server. It also supports an optional low-rate live camera stream to the control center when an operator explicitly opens it.
 
 The key principle is **on-edge decision-making**: the device decides whether a wild boar is present before anything leaves the station. The server only receives meaningful events.
 
@@ -71,7 +71,7 @@ When the window confidence threshold is crossed, the device sends a **single POS
 - An annotated JPEG snapshot when model bounding boxes are available
 - Model metadata (name, version)
 
-The entire detection pipeline — inference, filtering, decision — runs locally.
+Detection inference is never offloaded. The entire detection pipeline — inference, filtering, decision — runs locally.
 
 ---
 
@@ -164,3 +164,16 @@ CONFIDENCE_THR  = 0.7                 # average confidence to trigger alert
 THR_FRAMES      = 10                  # sliding window size
 METRICS_INTERVAL = 30                 # seconds between telemetry POSTs
 ```
+
+---
+
+## Live Stream (Control Station → Center)
+
+Live stream is designed for **operational verification**, not continuous surveillance.
+
+- When an alert appears, the operator can open a short live view to quickly confirm context and prioritize response.
+- The stream starts only on demand, which keeps bandwidth low and preserves the edge-first approach.
+- Detection decisions still happen on the station; the live view is for human situational awareness and confidence.
+- If needed, bounding boxes can be overlaid during the stream to make boar location immediately visible.
+
+Implementation note: the center requests a session and the device pushes low-rate image frames while that session is active. Runtime connection values (`SERVER_URL`, `DEVICE_TOKEN`, `STATION_ID`) are configured in `python/main.py`.
