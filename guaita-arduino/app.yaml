@@ -1,5 +1,7 @@
 name: guaita-arduino
-description: ""
+description: Arduino code for the guAIta app
 ports: []
-bricks: []
+bricks:
+- arduino:video_object_detection:
+    model: ei-model-973881-1
 icon: 🐖
