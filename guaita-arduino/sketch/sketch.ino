@@ -10,9 +10,8 @@ ModulinoDistance distance;
 ModulinoButtons buttons;
 
 bool active = false;
-bool bbox = false;
+bool bbox = true;
 bool lastPressedA = false;
-bool lastPressedB = false;
 
 bool set_led_state(bool state) {
     digitalWrite(LED_BUILTIN, state ? LOW : HIGH);
@@ -39,7 +38,7 @@ float get_distance() {
     return (float)d;
 }
 
-// Called by Python every loop — handles toggle logic internally
+// Called by Python every loop; handles the station active toggle internally.
 bool get_active_state() {
     buttons.update();
 
@@ -49,13 +48,6 @@ bool get_active_state() {
         buttons.setLeds(active, bbox, false);
     }
     lastPressedA = pressedA;
-
-    bool pressedB = buttons.isPressed(1);
-    if (pressedB && !lastPressedB) {
-        bbox = !bbox;
-        buttons.setLeds(active, bbox, false);
-    }
-    lastPressedB = pressedB;
 
     return active;
 }
@@ -72,6 +64,7 @@ void setup() {
     light.begin();
     distance.begin();
     buttons.begin();
+    buttons.setLeds(active, bbox, false);
     Bridge.begin();
     Bridge.provide("set_led_state", set_led_state);
     Bridge.provide("get_temperature", get_temperature);

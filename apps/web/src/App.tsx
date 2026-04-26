@@ -1196,7 +1196,7 @@ function LiveStreamViewer({
   const status = liveStreamStatus(session, frame, nowMs);
   const stationName = station?.name ?? session?.stationId ?? frame?.stationId ?? "Station camera";
   const lastFrameLabel = frame ? formatTime(frame.receivedAt) : "waiting";
-  const boundingBoxesEnabled = frame?.boundingBoxesEnabled ?? session?.lastBoundingBoxesEnabled ?? false;
+  const boundingBoxesEnabled = frame?.boundingBoxesEnabled ?? session?.lastBoundingBoxesEnabled ?? true;
   const boxes = boundingBoxesEnabled && frame ? frame.boxes : [];
 
   return (

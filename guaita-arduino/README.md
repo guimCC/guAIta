@@ -66,9 +66,9 @@ The model runs at a low per-frame confidence gate (`confidence=0.15`) so that ne
 When the window threshold is crossed, the device sends a **single POST** to the server with:
 
 - Station ID, timestamp, species, confidence score
-- Bounding box coordinates (optional)
+- Bounding box coordinates
 - Environmental telemetry at the moment of detection (temperature, humidity, light, distance)
-- An annotated JPEG snapshot (optional, toggled by the operator)
+- An annotated JPEG snapshot with the model's bounding boxes
 - Model metadata (name, version)
 
 No video is ever streamed. The entire detection pipeline — inference, filtering, decision — runs locally.
@@ -99,13 +99,13 @@ The station is designed to be operated in the field without a laptop.
 | Button | Function | LED Feedback |
 |---|---|---|
 | **A** | Toggle station active / standby | LED A on = active, off = standby |
-| **B** | Toggle bounding box overlay on snapshots | LED B on = boxes enabled |
+| **B** | Reserved for future demo controls | LED B stays on = boxes always enabled |
 
 **Standby mode** (button A off): sensors are still read, but no detection events or telemetry are posted. The built-in LED stops blinking.
 
 **Active mode** (button A on): full pipeline runs — sliding window inference, telemetry POSTs every 30s, detection events on threshold crossing. The built-in LED blinks continuously.
 
-**Bounding box toggle** (button B): when enabled, the snapshot attached to each detection event has the model's bounding boxes drawn over the boar. When disabled, the raw frame is sent. Both modes still include the full detection metadata.
+**Bounding boxes**: snapshots and live stream metadata always include the model's bounding boxes when detections provide them. Button B is intentionally not used for this in the demo so every capture keeps visual evidence.
 
 ---
 
