@@ -19,7 +19,7 @@ The key principle is **on-edge decision-making**: the device decides whether a w
 | Arduino UNO Q | Main board — runs Linux (MPU) + Arduino sketch (MCU) in parallel |
 | USB Web Camera | Vision input for the object detection model |
 | Modulino Thermo | Temperature and humidity readings |
-| Modulino Light | Ambient light level (lux) — used to infer time of day and visibility conditions |
+| Modulino Light | Ambient light level (lux) — used to infer time of day, shade and visibility conditions |
 | Modulino Distance | Time-of-Flight proximity sensor — detects presence before full vision inference |
 | Modulino Buttons | Physical controls for the operator (see below) |
 
