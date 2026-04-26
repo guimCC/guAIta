@@ -24,7 +24,7 @@ HEADERS = {
 
 # --- Detection thresholds ---
 CONFIDENCE_THR = 0.7
-THR_FRAMES = 20
+THR_FRAMES = 10
 
 # Detection snapshots are always annotated for the demo assessment path.
 DETECTION_SNAPSHOT_BOXES_ALWAYS = True
