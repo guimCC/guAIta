@@ -277,7 +277,8 @@ export const CivilProtectionCallSchema = z.object({
 
 export const StartCivilProtectionCallInputSchema = z.object({
   eventId: z.string().min(1),
-  toNumber: z.string().min(1).optional()
+  toNumber: z.string().min(1).optional(),
+  force: z.boolean().optional()
 });
 
 export const AcknowledgeCivilProtectionCallInputSchema = z.object({

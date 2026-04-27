@@ -252,6 +252,21 @@ function upsertTelemetry(readings: TelemetryReading[], reading: TelemetryReading
   return [reading, ...readings.filter((existing) => existing.telemetryId !== reading.telemetryId)].slice(0, 200);
 }
 
+function mergeEvents(currentEvents: DetectionEvent[], loadedEvents: DetectionEvent[]): DetectionEvent[] {
+  return currentEvents.reduce((mergedEvents, event) => upsertEvent(mergedEvents, event), loadedEvents);
+}
+
+function mergeCalls(currentCalls: CivilProtectionCall[], loadedCalls: CivilProtectionCall[]): CivilProtectionCall[] {
+  return currentCalls.reduce((mergedCalls, call) => upsertCall(mergedCalls, call), loadedCalls);
+}
+
+function mergeTelemetry(
+  currentReadings: TelemetryReading[],
+  loadedReadings: TelemetryReading[]
+): TelemetryReading[] {
+  return currentReadings.reduce((mergedReadings, reading) => upsertTelemetry(mergedReadings, reading), loadedReadings);
+}
+
 function upsertStreamSession(
   sessions: Map<string, LiveStreamSession>,
   session: LiveStreamSession
@@ -636,33 +651,17 @@ function canStartCivilProtectionCall(call: CivilProtectionCall | undefined): boo
 function civilProtectionButtonLabel(
   call: CivilProtectionCall | undefined,
   isCalling: boolean,
-  hasActiveAlert: boolean
+  _hasActiveAlert: boolean
 ): string {
   if (isCalling) {
     return "Calling";
   }
 
-  if (!hasActiveAlert) {
-    return "No active alert";
-  }
-
-  if (!call) {
-    return "Call Civil Protection";
-  }
-
-  if (call.status === "failed") {
+  if (call?.status === "failed") {
     return "Retry Civil Protection";
   }
 
-  if (call.status === "acknowledged") {
-    return "Alert resolved";
-  }
-
-  if (call.status === "completed") {
-    return "Call completed";
-  }
-
-  return "Call in progress";
+  return "Call Civil Protection";
 }
 
 function formatScenarioClock(scenarioState: ScenarioState | null): string {
@@ -1773,7 +1772,7 @@ export function App() {
   const stationListRef = useRef<HTMLDivElement | null>(null);
   const [listenFromDevice, setListenFromDevice] = useState(false);
   const listenFromDeviceRef = useRef(false);
-  const ignoredDeviceEventIdsRef = useRef<Set<string>>(new Set());
+  const deviceListeningUpdatedAtMsRef = useRef(0);
   const activeStreamStationIdRef = useRef<string | null>(null);
   const lastStreamReconnectAtRef = useRef(0);
 
@@ -1834,7 +1833,6 @@ export function App() {
     () => buildActionRequiredItems(activeAlertEvent, stationById, latestCall, activeAlertResolved),
     [activeAlertEvent, activeAlertResolved, latestCall, stationById]
   );
-  const canCallCivilProtection = Boolean(activeAlertEvent) && !activeAlertResolved && canStartCivilProtectionCall(latestCall);
   const civilProtectionCallLabel = civilProtectionButtonLabel(
     latestCall,
     isCallingCivilProtection,
@@ -1847,13 +1845,24 @@ export function App() {
     ? apiUrl(`/api/streams/${encodeURIComponent(activeStreamStationId)}/image-stream?viewer=${streamViewerKey}`)
     : undefined;
 
-  function applyDeviceListeningState(nextValue: boolean, options?: { clearIgnoredEvents?: boolean }) {
+  function applyDeviceListeningState(
+    nextValue: boolean,
+    _options?: { clearIgnoredEvents?: boolean },
+    updatedAt?: string
+  ) {
+    if (updatedAt) {
+      const incomingUpdatedAtMs = Date.parse(updatedAt);
+      if (Number.isFinite(incomingUpdatedAtMs)) {
+        if (incomingUpdatedAtMs < deviceListeningUpdatedAtMsRef.current) {
+          return;
+        }
+
+        deviceListeningUpdatedAtMsRef.current = incomingUpdatedAtMs;
+      }
+    }
+
     listenFromDeviceRef.current = nextValue;
     setListenFromDevice(nextValue);
-
-    if (options?.clearIgnoredEvents) {
-      ignoredDeviceEventIdsRef.current.clear();
-    }
   }
 
   function applyActiveStreamStationId(stationId: string | null) {
@@ -1959,7 +1968,7 @@ export function App() {
         throw new Error(body.message ?? body.error ?? `${response.status} ${response.statusText}`);
       }
 
-      applyDeviceListeningState(body.deviceListening.enabled, options);
+      applyDeviceListeningState(body.deviceListening.enabled, options, body.deviceListening.updatedAt);
     } catch (listenError) {
       applyDeviceListeningState(previousValue);
       setError(listenError instanceof Error ? listenError.message : "Could not update device listener.");
@@ -1997,10 +2006,14 @@ export function App() {
 
         setStations(stationResponse.stations);
         setZones(zoneResponse.zones);
-        setEvents(eventResponse.events);
-        setTelemetryReadings(telemetryResponse.telemetry);
-        applyDeviceListeningState(deviceListeningResponse.deviceListening.enabled);
-        setCalls(callResponse.calls);
+        setEvents((currentEvents) => mergeEvents(currentEvents, eventResponse.events));
+        setTelemetryReadings((currentReadings) => mergeTelemetry(currentReadings, telemetryResponse.telemetry));
+        applyDeviceListeningState(
+          deviceListeningResponse.deviceListening.enabled,
+          undefined,
+          deviceListeningResponse.deviceListening.updatedAt
+        );
+        setCalls((currentCalls) => mergeCalls(currentCalls, callResponse.calls));
         setScenarioState(scenarioResponse.scenario);
         setError(null);
       } catch (loadError) {
@@ -2033,11 +2046,6 @@ export function App() {
     });
     socket.on(SOCKET_EVENTS.detectionCreated, (event: DetectionEvent) => {
       if (event.source === "device") {
-        if (!listenFromDeviceRef.current) {
-          ignoredDeviceEventIdsRef.current.add(event.eventId);
-          return;
-        }
-
         applyDeviceListeningState(false);
         setDetectionNotice({
           event,
@@ -2074,7 +2082,7 @@ export function App() {
       setStreamNowMs(Date.now());
     });
     socket.on(SOCKET_EVENTS.deviceListenerUpdated, (state: DeviceListeningState) => {
-      applyDeviceListeningState(state.enabled, { clearIgnoredEvents: state.enabled });
+      applyDeviceListeningState(state.enabled, { clearIgnoredEvents: state.enabled }, state.updatedAt);
     });
     socket.on(SOCKET_EVENTS.eventsCleared, () => {
       setEvents([]);
@@ -2083,10 +2091,6 @@ export function App() {
       setResolvedAlertEventIds(new Set());
     });
     socket.on(SOCKET_EVENTS.callUpdated, (call: CivilProtectionCall) => {
-      if (ignoredDeviceEventIdsRef.current.has(call.eventId)) {
-        return;
-      }
-
       setCalls((currentCalls) => upsertCall(currentCalls, call));
     });
     socket.on(SOCKET_EVENTS.callsCleared, () => {
@@ -2207,36 +2211,55 @@ export function App() {
   }
 
   async function callCivilProtection() {
-    if (!activeAlertEvent) {
-      setError("No active detection to escalate.");
-      return;
-    }
-
-    if (!canStartCivilProtectionCall(latestCall)) {
-      setError("Civil Protection is already being tracked for this alert.");
-      return;
-    }
-
     setIsCallingCivilProtection(true);
     setError(null);
 
     try {
+      const [eventResponse, callResponse] = await Promise.all([
+        fetchJson<EventsResponse>("/api/events?limit=50"),
+        fetchJson<CallsResponse>("/api/calls?limit=20")
+      ]);
+      const refreshedEvents = mergeEvents(events, eventResponse.events);
+      const refreshedCalls = mergeCalls(calls, callResponse.calls);
+      const refreshedCurrentCalls = latestCallsByEvent(refreshedCalls);
+      const refreshedActiveCallEvent = unresolvedEscalationCallEvent(refreshedCurrentCalls, refreshedEvents);
+      const refreshedEscalationEvent = latestActionableEvent(
+        refreshedEvents,
+        refreshedCurrentCalls,
+        resolvedAlertEventIds
+      );
+      const callTargetEvent = refreshedActiveCallEvent ??
+        refreshedEscalationEvent ??
+        activeAlertEvent ??
+        refreshedEvents.find(isEscalationEvent) ??
+        refreshedEvents[0];
+
+      setEvents(refreshedEvents);
+      setCalls(refreshedCalls);
+
+      if (!callTargetEvent) {
+        throw new Error("No active detection to escalate.");
+      }
+
       const response = await fetch(apiUrl("/api/calls/civil-protection"), {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          eventId: activeAlertEvent.eventId
+          eventId: callTargetEvent.eventId,
+          force: true
         })
       });
       const body = (await response.json()) as CivilProtectionCallResponse;
 
+      if (body.call) {
+        setCalls((currentCalls) => upsertCall(currentCalls, body.call as CivilProtectionCall));
+      }
+
       if (!response.ok || !body.ok || !body.call) {
         throw new Error(body.message ?? body.error ?? `${response.status} ${response.statusText}`);
       }
-
-      setCalls((currentCalls) => upsertCall(currentCalls, body.call as CivilProtectionCall));
     } catch (callError) {
       setError(callError instanceof Error ? callError.message : "Civil Protection call failed.");
     } finally {
@@ -2728,18 +2751,16 @@ export function App() {
               <PhoneCall size={16} />
               <h2>Call Handling</h2>
             </div>
-            {canCallCivilProtection || isCallingCivilProtection ? (
-              <button
-                className="escalation-button call-header-button"
-                type="button"
-                onClick={callCivilProtection}
-                disabled={!canCallCivilProtection || isCallingCivilProtection}
-                title="Call the configured Civil Protection demo recipient"
-              >
-                <PhoneCall size={13} />
-                {civilProtectionCallLabel}
-              </button>
-            ) : null}
+            <button
+              className="escalation-button call-header-button"
+              type="button"
+              onClick={callCivilProtection}
+              disabled={isCallingCivilProtection}
+              title="Call the configured Civil Protection demo recipient"
+            >
+              <PhoneCall size={13} />
+              {civilProtectionCallLabel}
+            </button>
           </div>
           <div className="quarter-content call-handling-content">
             {latestCall ? (

@@ -691,6 +691,7 @@ export async function buildServer() {
       event,
       station,
       toNumber,
+      force: parsed.data.force === true,
       db,
       io
     });
@@ -1332,18 +1333,20 @@ async function startCivilProtectionCall({
   event,
   station,
   toNumber,
+  force = false,
   db,
   io
 }: {
   event: DetectionEvent;
   station: Station;
   toNumber: string;
+  force?: boolean;
   db: GuaitaDatabase;
   io: SocketServer;
 }): Promise<{ call: CivilProtectionCall; reused: boolean; failed: boolean; message?: string }> {
   const existingCall = db.getLatestCallForEvent(event.eventId);
 
-  if (existingCall && REUSABLE_CALL_STATUSES.has(existingCall.status)) {
+  if (!force && existingCall && REUSABLE_CALL_STATUSES.has(existingCall.status)) {
     return {
       call: existingCall,
       reused: true,
@@ -1353,7 +1356,7 @@ async function startCivilProtectionCall({
   }
 
   const activeCall = findActiveCivilProtectionCall(db);
-  if (activeCall) {
+  if (!force && activeCall) {
     return {
       call: activeCall,
       reused: true,
